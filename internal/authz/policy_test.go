@@ -51,7 +51,7 @@ func TestDecide(t *testing.T) {
 		{"view tidak boleh edit", active, domain.AccessView, ActionEditMigration, domain.ErrForbidden},
 		{"view tidak boleh execute", active, domain.AccessView, ActionExecuteMigration, domain.ErrForbidden},
 		{"edit boleh execute", active, domain.AccessEdit, ActionExecuteMigration, nil},
-		{"admin tanpa grant tidak otomatis akses",admin, domain.AccessNone, ActionViewSchema, domain.ErrNotFound},
+		{"admin tanpa grant tidak otomatis akses", admin, domain.AccessNone, ActionViewSchema, domain.ErrNotFound},
 		{"aksi tak dikenal ditolak", active, domain.AccessEdit, Action("db.drop"), domain.ErrForbidden},
 	}
 	for _, c := range cases {

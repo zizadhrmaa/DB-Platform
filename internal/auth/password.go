@@ -12,6 +12,7 @@ import (
 )
 
 // Hash disimpan dalam format PHC supaya parameternya ikut tersimpan:
+//
 //	$argon2id$v=19$m=65536,t=3,p=2$<salt>$<hash>
 type argonParams struct {
 	memoryKiB uint32
@@ -29,7 +30,7 @@ const MaxPasswordBytes = 256
 const MinPasswordLen = 8
 
 var (
-	ErrInvalidHash     =errors.New("auth: format password hash tidak valid")
+	ErrInvalidHash     = errors.New("auth: format password hash tidak valid")
 	ErrPasswordTooLong = errors.New("auth: password terlalu panjang")
 )
 
