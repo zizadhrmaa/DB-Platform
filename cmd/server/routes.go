@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"io/fs"
 	"net/http"
 
@@ -13,8 +14,11 @@ import (
 
 // App menyimpan dependensi bersama yang dipakai handler.
 type App struct {
-	View  *view.Renderer
-	Authz authz.Authorizer
+	DB           *sql.DB
+	View         *view.Renderer
+	Authz        authz.Authorizer
+	Sessions     auth.SessionManager
+	LoginLimiter *auth.LoginLimiter
 }
 
 // routes mendaftarkan semua route. Ganti app.todo dengan handler asli tanpa
@@ -35,8 +39,8 @@ func (app *App) routes() http.Handler {
 
 	// Authentication & Session
 	mux.HandleFunc("GET /login", app.loginPage)
-	mux.Handle("POST /login", app.todo("POST /login"))
-	mux.Handle("POST /logout", login(app.todo("POST /logout")))
+	mux.HandleFunc("POST /login", app.login)
+	mux.Handle("POST /logout", login(http.HandlerFunc(app.logout)))
 
 	// Database selection & viewer
 	mux.Handle("GET /{$}", login(http.RedirectHandler("/databases", http.StatusSeeOther)))
@@ -100,14 +104,6 @@ func (app *App) todo(route string) http.Handler {
 			Data:  map[string]string{"Route": route},
 		})
 	})
-}
-
-func (app *App) loginPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := auth.CurrentUser(r.Context()); ok {
-		http.Redirect(w, r, "/databases", http.StatusSeeOther)
-		return
-	}
-	app.View.Render(w, r, http.StatusOK, "login", view.PageData{Title: "Masuk"})
 }
 
 func (app *App) databaseList(w http.ResponseWriter, r *http.Request) {
