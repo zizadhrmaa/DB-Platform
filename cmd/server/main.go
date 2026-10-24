@@ -73,17 +73,24 @@ func run() error {
 	}
 	httpx.ErrorRenderer = renderer.ErrorPage
 
-	app := &App{View: renderer, Authz: &authz.Service{DB: db}}
+	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
+	go sessions.RunCleanup(ctx, time.Hour)
+
+	app := &App{
+		DB:           db,
+		View:         renderer,
+		Authz:        &authz.Service{DB: db},
+		Sessions:     sessions,
+		LoginLimiter: auth.NewLoginLimiter(),
+	}
 
 	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.
-	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog}
+	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware}
 	if cfg.DevAuthUserID != 0 {
 		slog.Warn("DEV_AUTH_USER_ID aktif, semua request login sebagai user ini", "user_id", cfg.DevAuthUserID)
 		mws = append(mws, auth.DevAuthMiddleware(db, cfg.DevAuthUserID))
 	}
-	// TODO: ganti blok di atas dengan
-	//   sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
-	//   mws = append(mws, sessions.Middleware, sessions.CSRFMiddleware)
+	mws = append(mws, sessions.CSRFMiddleware)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

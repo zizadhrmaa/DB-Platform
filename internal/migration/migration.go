@@ -21,8 +21,8 @@ const (
 	StatusDiscarded Status = "discarded"
 )
 
-func (s Status) Editable() bool   { return s == StatusPending || s == StatusFailed }
-func (s Status) Executable() bool { return s == StatusPending || s == StatusFailed }
+func (s Status) Editable() bool    { return s == StatusPending || s == StatusFailed }
+func (s Status) Executable() bool  { return s == StatusPending || s == StatusFailed }
 func (s Status) Discardable() bool { return s == StatusPending || s == StatusFailed }
 
 type Migration struct {

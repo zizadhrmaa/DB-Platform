@@ -59,7 +59,7 @@ token := auth.CSRFToken(r.Context()) // sudah otomatis masuk PageData
 
 User dibaca ulang dari database di setiap request, jadi kalau admin menonaktifkan user atau mencabut status admin, efeknya langsung terasa. Di test cukup pakai `auth.WithUser(ctx, u)`.
 
-Selama login asli belum jadi, isi `DEV_AUTH_USER_ID=1` di `.env`. Di production ini ditolak. Detail perilaku session ada di interface `SessionManager` (`internal/auth/session.go`).
+Login sudah jadi. Kalau ingin mencoba halaman sebagai user tertentu tanpa login, isi `DEV_AUTH_USER_ID` di `.env`. Di production ini ditolak. Detail perilaku session ada di interface `SessionManager` (`internal/auth/session.go`).
 
 ### Hak akses
 
@@ -142,6 +142,8 @@ Pesan error PostgreSQL dari migration yang gagal boleh ditampilkan ke user Edit,
 
 ## Session
 
+Implementasinya ada di `internal/auth/manager.go` (`DBSessionManager`), CSRF di `internal/auth/csrf.go`, dan pengecekan password di `internal/auth/login.go`.
+
 Urutan pengecekan di setiap request:
 
 1. Tidak ada cookie: lanjut tanpa user.
@@ -149,23 +151,24 @@ Urutan pengecekan di setiap request:
 3. Tolak kalau `revoked_at` terisi, sudah lewat `absolute_expires_at`, atau sudah idle lebih dari 30 menit.
 4. Tolak kalau ID ini sudah dirotasi dan grace period-nya habis.
 5. Muat user aktif dengan `auth.LoadActiveUser`. User nonaktif ditolak.
-6. Perbarui `last_seen_at`. Boleh dibatasi, misalnya paling sering sekali per menit.
-7. Kalau ID ini yang terbaru dan umurnya sudah 15 menit, rotasi.
+6. Kalau ID ini yang terbaru dan umurnya sudah 15 menit, atau user baru saja dijadikan admin, rotasi.
+7. Selain itu, perbarui `last_seen_at` paling sering sekali per menit.
 
-Hal yang perlu diperhatikan:
+Perilaku yang perlu diketahui:
 
-- Request paralel saat rotasi (beberapa tab sekaligus). Request dengan ID lama yang masih dalam grace period diterima, tapi tidak dirotasi lagi. Supaya satu baris tidak dirotasi dua kali, pakai `UPDATE ... SET replaced_at = now() WHERE id_hash = $1 AND replaced_at IS NULL`lalu cek `RowsAffected`.
-- Kalau response hilang setelah rotasi, browser masih memegang ID lama. ID itu masih sah 30 detik, dan request berikutnya akan menerima cookie ID terbaru.
-- Saat rotasi, `absolute_expires_at` disalin apa adanya.
+- Request paralel saat rotasi (beberapa tab sekaligus): satu ID hanya dirotasi sekali karena `UPDATE ... WHERE replaced_at IS NULL`. Request lain yang membawa ID lama diterima selama grace period tanpa dirotasi lagi.
+- Kalau response yang membawa cookie baru hilang, browser masih memegang ID lama. ID itu hanya sah 30 detik, setelah itu user harus login lagi. Server tidak bisa mengirim ulang ID baru karena yang disimpan hanya hash-nya.
+- Saat rotasi, `absolute_expires_at` dan token CSRF disalin apa adanya.
 - Login selalu membuat ID baru dan mencabut session lama di browser itu, untuk mencegah session fixation.
 - Logout mencabut seluruh family session dan menghapus cookie. Logout hanya lewat POST dengan CSRF, karena GET bisa dipicu dari `<img src=/logout>`.
-- Login gagal: pesannya sama untuk username tidak ada dan password salah. Kalau username tidak ada, tetap panggil `auth.VerifyAgainstDummy` supaya waktu responsnya sama. Balas 401 dan render ulang form; username boleh diisi lagi, password tidak.
-- `POST /login` belum punya session, jadi cek CSRF lewat header `Origin` / `Referer`, atau pakai cookie pre-session.
-- Password dan session ID tidak boleh muncul di URL, body response, maupun log.
-- User dinonaktifkan atau password-nya direset admin: `RevokeAllForUser`.
-- User dijadikan admin: perubahan langsung terbaca karena user dimuat ulang tiap request. Panggil `RotateOnPrivilegeChange` kalau session-nya aktif.
-- Hapus session yang sudah lewat lebih dari sehari secara berkala, misalnya dengan goroutine ticker.
-- Opsional: batasi percobaan login per username atau IP.
+- Login gagal: pesannya sama ("Username atau password salah.") untuk username tidak ada, password salah, dan user nonaktif, dengan status 401. Kalau username tidak ada, `auth.VerifyAgainstDummy` tetap dijalankan supaya waktu responsnya sama. Username diisi ulang di form, password tidak. Field kosong dibalas 422.
+- CSRF: request yang sudah login harus membawa `csrf_token` di form (atau header `X-CSRF-Token`). `POST /login` belum punya session, jadi yang dicek header `Origin` atau `Referer` harus sama dengan host. Request tanpa keduanya ditolak, jadi kalau mencoba lewat curl tambahkan `-H "Origin: http://localhost:8080"`.
+- Kenaikan privilege dideteksi lewat kolom `sessions.privileged` (schema `0002`). Kalau user dijadikan admin, request berikutnya otomatis mendapat ID baru. `RotateOnPrivilegeChange` tetap tersedia untuk rotasi manual.
+- Password dan session ID tidak pernah muncul di URL, body response, maupun log.
+- User dinonaktifkan atau password-nya direset admin: panggil `RevokeAllForUser`. User nonaktif juga otomatis ditolak di request berikutnya.
+- Session yang sudah tidak berlaku lebih dari sehari dihapus tiap jam oleh `RunCleanup`.
+- `DEV_AUTH_USER_ID` masih bisa dipakai untuk mencoba halaman sebagai user tertentu tanpa login.
+- Percobaan login dibatasi (`internal/auth/ratelimit.go`): 5 kali gagal per username atau 20 kali gagal per IP dalam 15 menit. Setelah itu login dibalas 429 dengan header `Retry-After` tanpa mengecek password, termasuk untuk username yang tidak ada. Login berhasil mengosongkan hitungan untuk username itu. Datanya di memori, jadi hilang saat server restart. IP diambil dari koneksi langsung, bukan `X-Forwarded-For`.
 
 ## Hak akses dan halaman admin
 
