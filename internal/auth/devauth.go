@@ -25,8 +25,9 @@ func LoadActiveUser(ctx context.Context, db *sql.DB, id int64) (*domain.User, er
 	return u, nil
 }
 
-// DevAuthMiddleware membuat semua request login sebagai devUserID. Ini
-// sementara sampai SessionManager selesai, dan config.Load menolaknya di production.
+// DevAuthMiddleware membuat semua request login sebagai devUserID, berguna
+// untuk mencoba halaman sebagai user tertentu. config.Load menolaknya di
+// production.
 func DevAuthMiddleware(db *sql.DB, devUserID int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
