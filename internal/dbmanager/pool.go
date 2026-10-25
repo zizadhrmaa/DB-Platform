@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -89,9 +92,9 @@ func (m *PoolManager) load(ctx context.Context, dbID int64) (ConnectionInfo, []b
 	var c ConnectionInfo
 	var cipher []byte
 	err := m.platform.QueryRowContext(ctx, `
-		SELECT id, name, host, port, database_name, username, sslmode, is_active, password_ciphertext
+		SELECT id, name, COALESCE(db_type, 'postgres'), host, port, database_name, username, sslmode, is_active, password_ciphertext
 		FROM db_connections WHERE id = $1`, dbID,
-	).Scan(&c.ID, &c.Name, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive, &cipher)
+	).Scan(&c.ID, &c.Name, &c.DBType, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive, &cipher)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, nil, ErrConnNotFound
 	}
@@ -104,10 +107,12 @@ func (m *PoolManager) load(ctx context.Context, dbID int64) (ConnectionInfo, []b
 	return c, cipher, nil
 }
 
-// Open membuka pool baru ke database target dan memastikan koneksinya
-// berhasil. Error-nya sudah disaring lewat SanitizeError.
 func Open(ctx context.Context, info ConnectionInfo, password string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", BuildDSN(info, password))
+	driver := "pgx"
+	if info.DBType == DBTypeMySQL {
+		driver = "mysql"
+	}
+	db, err := sql.Open(driver, BuildDSN(info, password))
 	if err != nil {
 		return nil, SanitizeError(err)
 	}
@@ -125,11 +130,18 @@ func Open(ctx context.Context, info ConnectionInfo, password string) (*sql.DB, e
 	return db, nil
 }
 
-// Ping mencoba koneksi sekali tanpa menyimpan pool, untuk tombol uji koneksi.
 func Ping(ctx context.Context, info ConnectionInfo, password string) error {
 	db, err := Open(ctx, info, password)
 	if err != nil {
 		return err
 	}
 	return db.Close()
+}
+
+func IsMySQL(db *sql.DB) bool {
+	if db == nil {
+		return false
+	}
+	drv := fmt.Sprintf("%T", db.Driver())
+	return strings.Contains(drv, "mysql") || strings.Contains(drv, "MySQL")
 }

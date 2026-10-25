@@ -21,6 +21,7 @@ var connFlash = map[string]string{
 type connectionPage struct {
 	ID       int64 // 0 untuk koneksi baru
 	Form     admin.ConnectionForm
+	DBTypes  []string
 	SSLModes []string
 }
 
@@ -29,6 +30,7 @@ func connPath(id int64) string { return fmt.Sprintf("/admin/databases/%d", id) }
 func formFromInfo(c *dbmanager.ConnectionInfo) admin.ConnectionForm {
 	return admin.ConnectionForm{
 		Name:     c.Name,
+		DBType:   c.DBType,
 		Host:     c.Host,
 		Port:     fmt.Sprint(c.Port),
 		Database: c.Database,
@@ -41,6 +43,7 @@ func formFromInfo(c *dbmanager.ConnectionInfo) admin.ConnectionForm {
 func connectionFormFrom(r *http.Request) admin.ConnectionForm {
 	return admin.ConnectionForm{
 		Name:     r.PostFormValue("name"),
+		DBType:   r.PostFormValue("db_type"),
 		Host:     r.PostFormValue("host"),
 		Port:     r.PostFormValue("port"),
 		Database: r.PostFormValue("database"),
@@ -60,7 +63,12 @@ func (app *App) renderConnection(w http.ResponseWriter, r *http.Request, status 
 		Title: title,
 		Flash: flash,
 		Error: errMsg,
-		Data:  connectionPage{ID: id, Form: form, SSLModes: admin.SSLModes},
+		Data: connectionPage{
+			ID:       id,
+			Form:     form,
+			DBTypes:  []string{dbmanager.DBTypePostgres, dbmanager.DBTypeMySQL},
+			SSLModes: admin.SSLModes,
+		},
 	})
 }
 
@@ -78,7 +86,7 @@ func (app *App) adminConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) adminNewConnection(w http.ResponseWriter, r *http.Request) {
-	app.renderConnection(w, r, http.StatusOK, 0, admin.ConnectionForm{Port: "5432", IsActive: true}, "", "")
+	app.renderConnection(w, r, http.StatusOK, 0, admin.ConnectionForm{DBType: dbmanager.DBTypePostgres, Port: "5432", IsActive: true}, "", "")
 }
 
 func (app *App) adminCreateConnection(w http.ResponseWriter, r *http.Request) {

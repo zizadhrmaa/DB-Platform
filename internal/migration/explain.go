@@ -101,19 +101,24 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 	}
 	defer release()
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
-		return nil, e
+	isMy := dbmanager.IsMySQL(target)
+	if !isMy {
+		if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
+			return nil, e
+		}
+		if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='30s'`); e != nil {
+			return nil, e
+		}
 	}
-	if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='30s'`); e != nil {
-		return nil, e
-	}
-	// Kunci yang sama dengan Execute, supaya tidak bentrok dengan eksekusi.
-	locked, e := tryLockTarget(work, tx, dbID)
+	locked, e := tryLockTarget(work, tx, dbID, isMy)
 	if e != nil {
 		return nil, e
 	}
 	if !locked {
 		return nil, fmt.Errorf("%w: ada migration yang sedang dijalankan di database ini", domain.ErrConflict)
+	}
+	if isMy {
+		defer unlockTarget(work, tx, dbID, isMy)
 	}
 
 	// SUMMARY membuat waktu planning tetap dilaporkan walaupun tanpa ANALYZE.

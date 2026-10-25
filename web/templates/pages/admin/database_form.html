@@ -14,6 +14,12 @@
         <input id="name" name="name" type="text" maxlength="100" required value="{{.Form.Name}}">
       </div>
       <div class="field">
+        <label for="db_type">DBMS</label>
+        <select id="db_type" name="db_type">
+          {{range $.Data.DBTypes}}<option value="{{.}}" {{if eq . $.Data.Form.DBType}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="field">
         <label for="host">Host</label>
         <input id="host" name="host" type="text" required autocomplete="off" value="{{.Form.Host}}"
                aria-describedby="host-hint">
