@@ -1,7 +1,7 @@
 # DB Platform IF3110 Milestone 1
 
 Fondasi Database Management Platform: access control (login, session,
-group-based authorization), database viewer untuk PostgreSQL, dan migration
+group-based authorization), database viewer untuk PostgreSQL dan MySQL, dan migration
 yang terkontrol dengan riwayat linear.
 
 ## Identitas kelompok
@@ -42,13 +42,14 @@ Login pertama memakai `ADMIN_USERNAME` / `ADMIN_PASSWORD` dari `.env`
 
 Database target contoh untuk didaftarkan lewat halaman admin:
 
-| Nama | Host (dari laptop) | Port | Database | User | Password |
-|---|---|---|---|---|---|
-| Toko | localhost | 5433 | toko | platform_app | platform_app_pass |
-| Kampus | localhost | 5434 | kampus | platform_app | platform_app_pass |
+| Nama | DBMS | Host (dari laptop) | Port | Database | User | Password |
+|---|---|---|---|---|---|---|
+| Toko | postgres | localhost | 5433 | toko | platform_app | platform_app_pass |
+| Kampus (Postgres) | postgres | localhost | 5434 | kampus | platform_app | platform_app_pass |
+| Kampus (MySQL) | mysql | localhost | 3306 | kampus | platform_app | platform_app_pass |
 
 Jika aplikasi dijalankan di Docker (`docker compose --profile app up`), gunakan host
-`target-toko` / `target-kampus` port `5432`.
+`target-toko` / `target-kampus` / `target-mysql`.
 
 ## Session
 
