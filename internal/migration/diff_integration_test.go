@@ -284,3 +284,38 @@ func TestDiffCrossSchemaForeignKey(t *testing.T) {
 		t.Fatalf("FK baru ke schema lain: err=%v, want pesan yang jelas", err)
 	}
 }
+
+func TestDiffOtherSchemaChangesThatSchema(t *testing.T) {
+	ctx := context.Background()
+	env, schema := diffEnv(t)
+	other := schema + "_gudang"
+	// Tabel bernama sama di schema default dan di schema lain.
+	if _, err := env.target.Exec(`CREATE SCHEMA ` + other + `; CREATE TABLE ` + other + `.lama (id INT);`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { env.target.Exec(`DROP SCHEMA ` + other + ` CASCADE`) })
+
+	ddl, err := env.store.CurrentSchema(ctx, env.user, env.dbID, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := env.store.Diff(ctx, env.user, env.dbID, other, strings.Replace(ddl, "id integer", "id integer,\n    catatan text", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := env.create(t, "diff schema lain", d.SQL)
+	if run, err := env.store.Execute(ctx, env.user, env.dbID, m.ID); err != nil || run.Status != StatusSuccess {
+		t.Fatalf("eksekusi SQL hasil diff: %+v err=%v\n%s", run, err, d.SQL)
+	}
+	count := func(s string) int {
+		var n int
+		if err := env.target.QueryRow(`SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = 'lama' AND column_name = 'catatan'`, s).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if count(other) != 1 || count(schema) != 0 {
+		t.Fatalf("kolom masuk ke schema yang salah: %s=%d, %s=%d\n%s", other, count(other), schema, count(schema), d.SQL)
+	}
+}

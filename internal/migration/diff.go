@@ -135,6 +135,16 @@ func (s *Store) Diff(ctx context.Context, u *domain.User, dbID int64, schema, de
 		}
 		d = diffSnapshots(cur, want)
 		d.Schema = schema
+		if d.SQL != "" {
+			// Nama tabel di SQL hasil diff ditulis tanpa schema, jadi search_path
+			// diarahkan ke schema yang dibandingkan. Tanpa ini, diff untuk schema
+			// selain public bisa mengubah tabel bernama sama di public.
+			var quoted string
+			if e = tx.QueryRowContext(work, `SELECT quote_ident($1)`, schema).Scan(&quoted); e != nil {
+				return e
+			}
+			d.SQL = "SET LOCAL search_path TO " + quoted + ", pg_catalog;\n\n" + d.SQL
+		}
 		return nil
 	})
 	return d, e
@@ -158,10 +168,11 @@ func (s *Store) inTarget(ctx context.Context, u *domain.User, dbID int64, fn fun
 	}
 	work, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	tx, e := target.BeginTx(work, nil)
+	tx, release, e := beginUserTx(work, target)
 	if e != nil {
-		return dbmanager.SanitizeError(e)
+		return e
 	}
+	defer release()
 	defer tx.Rollback()
 	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
 		return e

@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,6 +23,27 @@ type Store struct {
 }
 
 var _ Service = (*Store)(nil)
+
+// beginUserTx membuka transaction di koneksi khusus untuk SQL dari user.
+// SQL user bisa meninggalkan state session, misalnya SET search_path atau
+// pg_advisory_lock, yang tidak ikut hilang saat commit atau rollback. Jadi
+// koneksinya ditutup lewat release, bukan dikembalikan ke pool.
+func beginUserTx(ctx context.Context, target *sql.DB) (*sql.Tx, func(), error) {
+	conn, e := target.Conn(ctx)
+	if e != nil {
+		return nil, nil, dbmanager.SanitizeError(e)
+	}
+	release := func() {
+		conn.Raw(func(any) error { return driver.ErrBadConn })
+		conn.Close()
+	}
+	tx, e := conn.BeginTx(ctx, nil)
+	if e != nil {
+		release()
+		return nil, nil, dbmanager.SanitizeError(e)
+	}
+	return tx, release, nil
+}
 
 const columns = `m.id, m.db_id, m.version, m.title, m.sql_text, m.status, COALESCE(creator.username,''),m.created_at,m.updated_at,COALESCE(executor.username,''),m.executed_at,m.finished_at,COALESCE(m.error_message,'')`
 const joins = ` FROM migrations m LEFT JOIN users creator ON creator.id=m.created_by LEFT JOIN users executor ON executor.id=m.executed_by `
@@ -183,10 +205,11 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 		return nil, e
 	}
 
-	tx, e := target.BeginTx(work, nil)
+	tx, release, e := beginUserTx(work, target)
 	if e != nil {
-		return nil, dbmanager.SanitizeError(e)
+		return nil, e
 	}
+	defer release()
 	defer tx.Rollback()
 	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
 		return nil, e

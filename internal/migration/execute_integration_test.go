@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
@@ -223,4 +224,54 @@ func TestExecuteRecoversStuckMigrationFirst(t *testing.T) {
 	if err != nil || run.Status != StatusSuccess {
 		t.Fatalf("eksekusi setelah server mati: %+v err=%v", run, err)
 	}
+}
+
+func TestExecuteDoesNotLeakSessionState(t *testing.T) {
+	ctx := context.Background()
+	env := newExecuteEnv(t)
+	// Satu koneksi saja, supaya kalau koneksi dipakai ulang, state-nya pasti terbawa.
+	env.target.SetMaxOpenConns(1)
+
+	set := env.create(t, "ubah search_path", "SET search_path TO pg_temp; SELECT pg_advisory_lock(424242, 1);")
+	if run, err := env.store.Execute(ctx, env.user, env.dbID, set.ID); err != nil || run.Status != StatusSuccess {
+		t.Fatalf("eksekusi pertama: %+v err=%v", run, err)
+	}
+	next := env.create(t, "buat tabel", "CREATE TABLE sesudah_set (id INT)")
+	if run, err := env.store.Execute(ctx, env.user, env.dbID, next.ID); err != nil || run.Status != StatusSuccess {
+		t.Fatalf("eksekusi kedua: %+v err=%v", run, err)
+	}
+	var schema string
+	if err := env.target.QueryRow(`SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'sesudah_set'`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(schema, "pg_temp") {
+		t.Fatalf("tabel dibuat di %s; search_path dari migration sebelumnya terbawa", schema)
+	}
+	waitNoAdvisoryLock(t, env.target, 424242)
+}
+
+func TestExplainDoesNotLeakAdvisoryLock(t *testing.T) {
+	env := newExecuteEnv(t)
+	m := env.create(t, "kunci", "SELECT pg_advisory_lock(424243, 1);")
+	if _, err := env.store.Explain(context.Background(), env.user, env.dbID, m.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	waitNoAdvisoryLock(t, env.target, 424243)
+}
+
+// Koneksi yang ditutup baru melepas kuncinya setelah backend-nya selesai,
+// jadi dicek beberapa kali.
+func waitNoAdvisoryLock(t *testing.T, db *sql.DB, classID int) {
+	t.Helper()
+	var n int
+	for i := 0; i < 40; i++ {
+		if err := db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1`, classID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("advisory lock dari SQL migration masih dipegang (%d)", n)
 }
