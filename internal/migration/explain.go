@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
-	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 )
 
@@ -96,10 +95,11 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 
 	work, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	tx, e := target.BeginTx(work, nil)
+	tx, release, e := beginUserTx(work, target)
 	if e != nil {
-		return nil, dbmanager.SanitizeError(e)
+		return nil, e
 	}
+	defer release()
 	defer tx.Rollback()
 	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
 		return nil, e

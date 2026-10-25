@@ -3,6 +3,7 @@ package auth
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHashAndVerify(t *testing.T) {
@@ -46,5 +47,30 @@ func TestPasswordTooLong(t *testing.T) {
 	long := strings.Repeat("a", MaxPasswordBytes+1)
 	if _, err := HashPassword(long); err == nil {
 		t.Fatal("password terlalu panjang seharusnya ditolak")
+	}
+}
+
+func TestHashConcurrencyIsLimited(t *testing.T) {
+	hash, err := HashPassword("rahasia-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := hashWait
+	hashWait = 50 * time.Millisecond
+	defer func() { hashWait = old }()
+
+	// Semua slot dipakai, jadi hash berikutnya harus menyerah, bukan ikut jalan.
+	for i := 0; i < maxConcurrentHashes; i++ {
+		hashSlots <- struct{}{}
+	}
+	_, err = VerifyPassword("rahasia-123", hash)
+	if VerifyAgainstDummy("apa saja") != ErrHashBusy || err != ErrHashBusy {
+		t.Fatalf("saat semua slot terpakai: err=%v, want ErrHashBusy", err)
+	}
+	for i := 0; i < maxConcurrentHashes; i++ {
+		<-hashSlots
+	}
+	if ok, err := VerifyPassword("rahasia-123", hash); !ok || err != nil {
+		t.Fatalf("setelah slot kosong: ok=%v err=%v", ok, err)
 	}
 }

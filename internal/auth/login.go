@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
@@ -13,11 +14,16 @@ import (
 // salah, maupun user nonaktif, supaya penyebabnya tidak bisa ditebak.
 var ErrInvalidCredentials = errors.New("auth: username atau password salah")
 
+// ErrBusy berarti password belum bisa dicek karena server sedang sibuk.
+var ErrBusy = fmt.Errorf("%w: server sedang sibuk", domain.ErrUnavailable)
+
 const maxUsernameLen = 64
 
 func Authenticate(ctx context.Context, db *sql.DB, username, password string) (*domain.User, error) {
 	if username == "" || len(username) > maxUsernameLen {
-		VerifyAgainstDummy(password)
+		if VerifyAgainstDummy(password) != nil {
+			return nil, ErrBusy
+		}
 		return nil, ErrInvalidCredentials
 	}
 
@@ -28,7 +34,9 @@ func Authenticate(ctx context.Context, db *sql.DB, username, password string) (*
 		FROM users WHERE lower(username) = lower($1)`, username,
 	).Scan(&u.ID, &u.Username, &hash, &u.IsPlatformAdmin, &u.IsActive)
 	if errors.Is(err, sql.ErrNoRows) {
-		VerifyAgainstDummy(password)
+		if VerifyAgainstDummy(password) != nil {
+			return nil, ErrBusy
+		}
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
@@ -36,6 +44,9 @@ func Authenticate(ctx context.Context, db *sql.DB, username, password string) (*
 	}
 
 	ok, err := VerifyPassword(password, hash)
+	if errors.Is(err, ErrHashBusy) {
+		return nil, ErrBusy
+	}
 	if err != nil {
 		slog.Error("password hash rusak", "user_id", u.ID, "err", err)
 		return nil, ErrInvalidCredentials

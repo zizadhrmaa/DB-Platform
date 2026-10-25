@@ -20,6 +20,7 @@ import (
 const (
 	DefaultPageSize = 50
 	MaxPageSize     = 200
+	MaxPage         = 10_000_000 // supaya perhitungan OFFSET tidak overflow
 	maxCellRunes    = 200
 	maxBytesShown   = 32
 
@@ -316,7 +317,7 @@ func ClampPage(pageStr, sizeStr string) (int, int) {
 	if err != nil || size < 1 {
 		size = DefaultPageSize
 	}
-	return page, min(size, MaxPageSize)
+	return min(page, MaxPage), min(size, MaxPageSize)
 }
 
 func TableData(ctx context.Context, db *sql.DB, schema, name string, page, size int) (*DataPage, error) {

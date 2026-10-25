@@ -220,6 +220,7 @@ func TestClampPage(t *testing.T) {
 		{"0", "9999", 1, dbmanager.MaxPageSize},
 		{"-5", "-1", 1, dbmanager.DefaultPageSize},
 		{"abc", "x", 1, dbmanager.DefaultPageSize},
+		{"9223372036854775807", "200", dbmanager.MaxPage, dbmanager.MaxPageSize},
 	} {
 		if p, s := dbmanager.ClampPage(c.page, c.size); p != c.wantPage || s != c.wantSize {
 			t.Errorf("ClampPage(%q, %q) = %d, %d; want %d, %d", c.page, c.size, p, s, c.wantPage, c.wantSize)

@@ -8,41 +8,58 @@ import (
 
 const (
 	MaxFailsPerUsername = 5
-	MaxFailsPerIP       = 20
+	MaxFailsPerIP       = 100
 	LoginFailWindow     = 15 * time.Minute
 )
 
-// LoginLimiter membatasi percobaan login yang gagal per username dan per
-// IP. Datanya hanya di memori, jadi hilang kalau server restart.
+// LoginLimiter membatasi percobaan login per pasangan username dan IP, dan
+// per IP. Batas per username saja tidak dipakai karena siapa pun bisa
+// mengunci akun orang lain cukup dengan salah password lima kali. Datanya
+// hanya di memori, jadi hilang kalau server restart.
 type LoginLimiter struct {
-	user *attemptLimiter
+	pair *attemptLimiter
 	ip   *attemptLimiter
 }
 
 func NewLoginLimiter() *LoginLimiter {
 	return &LoginLimiter{
-		user: newAttemptLimiter(MaxFailsPerUsername, LoginFailWindow),
+		pair: newAttemptLimiter(MaxFailsPerUsername, LoginFailWindow),
 		ip:   newAttemptLimiter(MaxFailsPerIP, LoginFailWindow),
 	}
 }
 
-// Wait mengembalikan berapa lama lagi login boleh dicoba. Nol berarti
-// boleh sekarang.
-func (l *LoginLimiter) Wait(username, ip string) time.Duration {
-	return max(l.user.wait(normalizeUsername(username)), l.ip.wait(ip))
+// Attempt mencatat satu percobaan login sebelum password dicek, lalu
+// mengembalikan berapa lama lagi login boleh dicoba. Nol berarti boleh.
+// Percobaan dicatat di awal supaya request serentak tidak bisa melewati
+// batas sebelum kegagalannya sempat terhitung.
+func (l *LoginLimiter) Attempt(username, ip string) time.Duration {
+	key := pairKey(username, ip)
+	if w := l.pair.take(key); w > 0 {
+		return w
+	}
+	if w := l.ip.take(ip); w > 0 {
+		l.pair.undo(key)
+		return w
+	}
+	return 0
 }
 
-func (l *LoginLimiter) Failed(username, ip string) {
-	l.user.fail(normalizeUsername(username))
-	l.ip.fail(ip)
+// Succeeded menghapus hitungan pasangan ini dan tidak menghitung login yang
+// berhasil sebagai kegagalan IP.
+func (l *LoginLimiter) Succeeded(username, ip string) {
+	l.pair.reset(pairKey(username, ip))
+	l.ip.undo(ip)
 }
 
-func (l *LoginLimiter) Succeeded(username string) {
-	l.user.reset(normalizeUsername(username))
+// Cancel membatalkan percobaan yang tidak sempat dicek, misalnya karena
+// server sedang sibuk.
+func (l *LoginLimiter) Cancel(username, ip string) {
+	l.pair.undo(pairKey(username, ip))
+	l.ip.undo(ip)
 }
 
-func normalizeUsername(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
+func pairKey(username, ip string) string {
+	return strings.ToLower(strings.TrimSpace(username)) + "\x00" + ip
 }
 
 type attemptLimiter struct {
@@ -58,28 +75,33 @@ func newAttemptLimiter(limit int, window time.Duration) *attemptLimiter {
 	return &attemptLimiter{max: limit, window: window, now: time.Now, fails: map[string][]time.Time{}}
 }
 
-func (a *attemptLimiter) wait(key string) time.Duration {
+// take mencatat percobaan kalau masih di bawah batas. Kalau sudah penuh,
+// tidak ada yang dicatat dan hasilnya waktu tunggu sampai percobaan tertua
+// di jendela ini kedaluwarsa.
+func (a *attemptLimiter) take(key string) time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
 	recent := a.recent(key, now)
-	if len(recent) < a.max {
-		return 0
+	if len(recent) >= a.max {
+		return recent[len(recent)-a.max].Add(a.window).Sub(now)
 	}
-	// Terkunci sampai percobaan tertua di jendela ini kedaluwarsa.
-	return recent[len(recent)-a.max].Add(a.window).Sub(now)
+	a.fails[key] = append(recent, now)
+	a.sweep(now)
+	return 0
 }
 
-func (a *attemptLimiter) fail(key string) {
+func (a *attemptLimiter) undo(key string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := a.now()
-	recent := append(a.recent(key, now), now)
-	if len(recent) > a.max {
-		recent = recent[len(recent)-a.max:]
+	list := a.fails[key]
+	switch len(list) {
+	case 0:
+	case 1:
+		delete(a.fails, key)
+	default:
+		a.fails[key] = list[:len(list)-1]
 	}
-	a.fails[key] = recent
-	a.sweep(now)
 }
 
 func (a *attemptLimiter) reset(key string) {

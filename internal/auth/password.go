@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -32,7 +33,29 @@ const MinPasswordLen = 8
 var (
 	ErrInvalidHash     = errors.New("auth: format password hash tidak valid")
 	ErrPasswordTooLong = errors.New("auth: password terlalu panjang")
+	ErrHashBusy        = errors.New("auth: terlalu banyak proses hashing password")
 )
+
+// Setiap hash memakai 64 MiB memori. Tanpa batas, login paralel dalam
+// jumlah besar bisa menghabiskan memori server.
+const maxConcurrentHashes = 4
+
+var (
+	hashSlots = make(chan struct{}, maxConcurrentHashes)
+	hashWait  = 10 * time.Second
+)
+
+func argonKey(password string, salt []byte, p argonParams) ([]byte, error) {
+	timer := time.NewTimer(hashWait)
+	defer timer.Stop()
+	select {
+	case hashSlots <- struct{}{}:
+	case <-timer.C:
+		return nil, ErrHashBusy
+	}
+	defer func() { <-hashSlots }()
+	return argon2.IDKey([]byte(password), salt, p.time, p.memoryKiB, p.threads, p.keyLen), nil
+}
 
 func HashPassword(password string) (string, error) {
 	if len(password) > MaxPasswordBytes {
@@ -43,7 +66,10 @@ func HashPassword(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, p.time, p.memoryKiB, p.threads, p.keyLen)
+	key, err := argonKey(password, salt, p)
+	if err != nil {
+		return "", err
+	}
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.memoryKiB, p.time, p.threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
@@ -77,7 +103,11 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil || len(want) == 0 {
 		return false, ErrInvalidHash
 	}
-	got := argon2.IDKey([]byte(password), salt, p.time, p.memoryKiB, p.threads, uint32(len(want)))
+	p.keyLen = uint32(len(want))
+	got, err := argonKey(password, salt, p)
+	if err != nil {
+		return false, err
+	}
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 
@@ -85,6 +115,9 @@ var dummyHash, _ = HashPassword("dummy-password-for-timing")
 
 // VerifyAgainstDummy dipanggil saat username tidak ditemukan, supaya waktu
 // respons sama dan keberadaan username tidak bisa ditebak dari timing.
-func VerifyAgainstDummy(password string) {
-	_, _ = VerifyPassword(password, dummyHash)
+// Error-nya hanya ErrHashBusy, dan harus diperlakukan sama dengan user yang
+// ada supaya kondisi server sibuk juga tidak membocorkan username.
+func VerifyAgainstDummy(password string) error {
+	_, err := VerifyPassword(password, dummyHash)
+	return err
 }
