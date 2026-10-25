@@ -45,7 +45,7 @@ func (app *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
-	if wait := app.LoginLimiter.Wait(username, ip); wait > 0 {
+	if wait := app.LoginLimiter.Attempt(username, ip); wait > 0 {
 		minutes := int(math.Ceil(wait.Minutes()))
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 		app.View.Render(w, r, http.StatusTooManyRequests, "login", view.PageData{
@@ -58,7 +58,6 @@ func (app *App) login(w http.ResponseWriter, r *http.Request) {
 
 	u, err := auth.Authenticate(r.Context(), app.DB, username, password)
 	if errors.Is(err, auth.ErrInvalidCredentials) {
-		app.LoginLimiter.Failed(username, ip)
 		app.View.Render(w, r, http.StatusUnauthorized, "login", view.PageData{
 			Title: "Masuk",
 			Error: "Username atau password salah.",
@@ -66,7 +65,18 @@ func (app *App) login(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if errors.Is(err, auth.ErrBusy) {
+		app.LoginLimiter.Cancel(username, ip)
+		w.Header().Set("Retry-After", "5")
+		app.View.Render(w, r, http.StatusServiceUnavailable, "login", view.PageData{
+			Title: "Masuk",
+			Error: "Server sedang sibuk. Coba lagi beberapa detik lagi.",
+			Data:  form,
+		})
+		return
+	}
 	if err != nil {
+		app.LoginLimiter.Cancel(username, ip)
 		httpx.Error(w, r, err)
 		return
 	}
@@ -75,7 +85,7 @@ func (app *App) login(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, r, err)
 		return
 	}
-	app.LoginLimiter.Succeeded(username)
+	app.LoginLimiter.Succeeded(username, ip)
 	http.Redirect(w, r, "/databases", http.StatusSeeOther)
 }
 

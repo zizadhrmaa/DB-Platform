@@ -66,6 +66,13 @@ atau password-nya direset langsung kehilangan semua session-nya. Setiap
 request yang mengubah data wajib membawa token CSRF. Nilainya diatur di
 `internal/auth/config.go`.
 
+Percobaan login dibatasi 5 kali per pasangan username dan IP, dan 100 kali
+per IP, dalam 15 menit. Batasnya sengaja tidak per username saja, supaya
+orang lain tidak bisa mengunci akun kita hanya dengan salah password lima
+kali. Login yang berhasil tidak ikut dihitung. Hashing password (Argon2id,
+64 MiB per hash) paling banyak berjalan 4 sekaligus; kalau server sedang
+sibuk, login dibalas 503 dan bisa dicoba lagi beberapa detik kemudian.
+
 ## Akses efektif
 
 User hanya mendapat akses database lewat group. Kalau user berada di
