@@ -7,6 +7,64 @@
 <h2>Review SQL</h2>
 <pre><code>{{.Data.Item.SQL}}</code></pre>
 {{if .Data.Item.ErrorMessage}}<p role="alert">Error SQL: {{.Data.Item.ErrorMessage}}</p>{{end}}
+{{if and .Data.CanEdit .Data.Item.Status.Executable}}
+<section class="card">
+  <h2>Analisis query</h2>
+  <p>Lihat execution plan sebelum migration dijalankan. Semua statement dijalankan di transaction yang langsung dibatalkan, jadi isi database tidak berubah.</p>
+  <form method="post" action="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/explain">
+    {{template "csrf" .}}
+    <div class="check">
+      <input id="analyze" name="analyze" type="checkbox">
+      <label for="analyze">Jalankan juga (EXPLAIN ANALYZE) untuk melihat waktu dan jumlah row sebenarnya</label>
+    </div>
+    <p class="hint">Dengan ANALYZE, nilai sequence yang terpakai tidak ikut kembali walaupun transaction dibatalkan.</p>
+    <button type="submit">Analisis query</button>
+  </form>
+</section>
+{{end}}
+{{with .Data.Analysis}}
+<section>
+  <h2>Hasil EXPLAIN{{if .Analyze}} ANALYZE{{end}}</h2>
+  {{range $i, $s := .Statements}}
+  <h3>Statement {{add $i 1}}</h3>
+  <pre><code>{{$s.SQL}}</code></pre>
+  {{if $s.Error}}
+  <p role="alert" class="alert alert-error">Statement ini gagal: {{$s.Error}}. Statement setelahnya tidak dianalisis.</p>
+  {{else if not $s.Explainable}}
+  <p class="hint">Perintah ini tidak punya execution plan (misalnya DDL). Statement ini tetap dijalankan di simulasi supaya statement berikutnya melihat perubahannya.</p>
+  {{else}}
+  <p class="hint">Planning {{printf "%.3f" $s.PlanningMs}} ms{{if $.Data.Analysis.Analyze}} · Execution {{printf "%.3f" $s.ExecutionMs}} ms{{end}}</p>
+  <div class="table-wrap">
+  <table class="plan">
+    <caption class="visually-hidden">Execution plan statement {{add $i 1}}</caption>
+    <thead>
+      <tr>
+        <th scope="col">Langkah</th>
+        <th scope="col">Tabel / index</th>
+        <th scope="col">Kondisi</th>
+        <th scope="col">Estimasi cost</th>
+        <th scope="col">Estimasi row</th>
+        {{if $.Data.Analysis.Analyze}}<th scope="col">Waktu aktual (ms)</th><th scope="col">Row aktual</th>{{end}}
+      </tr>
+    </thead>
+    <tbody>
+    {{range $s.Nodes}}
+      <tr>
+        <td class="plan-op">{{.Prefix}}{{.Operation}}{{if .IsSeqScan}} <span class="badge">tanpa index</span>{{end}}{{if .UsesIndex}} <span class="badge badge-view">index</span>{{end}}</td>
+        <td>{{.Target}}</td>
+        <td>{{.Condition}}{{if .RowsRemoved}} <span class="muted">({{printf "%.0f" .RowsRemoved}} row dibuang filter)</span>{{end}}</td>
+        <td>{{printf "%.2f" .StartupCost}}..{{printf "%.2f" .TotalCost}}</td>
+        <td>{{printf "%.0f" .PlanRows}}</td>
+        {{if $.Data.Analysis.Analyze}}<td>{{if .HasActual}}{{printf "%.3f" .ActualMs}}{{else}}-{{end}}</td><td>{{if .HasActual}}{{printf "%.0f" .ActualRows}}{{if gt .Loops 1.0}} x {{printf "%.0f" .Loops}} loop{{end}}{{else}}-{{end}}</td>{{end}}
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+  {{end}}
+</section>
+{{end}}
 {{if .Data.CanEdit}}{{if .Data.Item.Status.Editable}}
 <p><a href="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/edit">Edit SQL</a></p>
 <form method="post" action="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/execute">{{template "csrf" .}}<button type="submit">Jalankan migration</button></form>
