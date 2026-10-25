@@ -13,10 +13,9 @@ import (
 type Action string
 
 const (
-	ActionViewSchema     Action = "db.schema.view"
-	ActionViewData       Action = "db.data.view"
-	ActionViewMigrations Action = "db.migration.view"
-	// Query console read-only. Pembatasan read-only tetap harus dijaga di backend (KONTRAK §9a).
+	ActionViewSchema       Action = "db.schema.view"
+	ActionViewData         Action = "db.data.view"
+	ActionViewMigrations   Action = "db.migration.view"
 	ActionRunReadQuery     Action = "db.query.readonly"
 	ActionCreateMigration  Action = "db.migration.create"
 	ActionEditMigration    Action = "db.migration.edit" // termasuk discard

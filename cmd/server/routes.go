@@ -28,9 +28,6 @@ type App struct {
 	Migration    *migration.Handler
 }
 
-// routes mendaftarkan semua route. Ganti app.todo dengan handler asli tanpa
-// mengubah path, karena path dipakai template dan test.
-
 // Form HTML cuma bisa GET/POST, jadi hapus/eksekusi pakai POST ke
 // sub-path seperti .../delete dan .../execute.
 func (app *App) routes() http.Handler {
@@ -56,7 +53,7 @@ func (app *App) routes() http.Handler {
 	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.tableShow)))
 	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.tableData)))
 
-	// Opsional (QnA 5 & 7): query console read-only. Hapus jika tidak dipakai.
+	// Query console read-only, belum dikerjakan.
 	mux.Handle("GET /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("form query read-only")))
 	mux.Handle("POST /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("jalankan query read-only")))
 

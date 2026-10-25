@@ -16,8 +16,8 @@ type Status string
 const (
 	StatusPending   Status = "pending"
 	StatusRunning   Status = "running"
-	StatusSuccess   Status = "success" // tidak bisa diubah lagi
-	StatusFailed    Status = "failed"  // sudah di-rollback, boleh diedit lalu dijalankan ulang
+	StatusSuccess   Status = "success"
+	StatusFailed    Status = "failed" // sudah di-rollback, boleh diedit lalu dijalankan ulang
 	StatusDiscarded Status = "discarded"
 )
 
@@ -41,7 +41,6 @@ type Migration struct {
 	ErrorMessage string
 }
 
-// Run adalah satu percobaan eksekusi.
 type Run struct {
 	ID           int64
 	MigrationID  int64
@@ -119,24 +118,11 @@ type Service interface {
 
 	Discard(ctx context.Context, u *domain.User, dbID, id int64) error
 
-	// Execute:
-	//  1. Di DB platform: kunci migration dbID, CheckExecutable, set
-	//     status running, tambah baris migration_runs, commit.
-	//  2. Di DB target: BEGIN, set lock_timeout dan statement_timeout,
-	//     pg_advisory_xact_lock(dbID), Exec(sql) tanpa argumen, lalu
-	//     COMMIT atau ROLLBACK.
-	//  3. Simpan hasil (success/failed, finished_at, error_message).
-	// Saat start, migration yang masih running karena server crash diubah
-	// jadi failed.
 	Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error)
 
-	// Explain menampilkan execution plan SQL migration tanpa mengubah
-	// database target. Dengan analyze, statement benar-benar dijalankan
-	// lalu di-rollback.
+	// Dengan analyze, statement benar-benar dijalankan lalu di-rollback.
 	Explain(ctx context.Context, u *domain.User, dbID, id int64, analyze bool) (*Analysis, error)
 
-	// Schemas, CurrentSchema, dan Diff dipakai halaman schema diff untuk
-	// menghasilkan kandidat SQL migration dari schema yang diinginkan.
 	Schemas(ctx context.Context, dbID int64) ([]string, error)
 	CurrentSchema(ctx context.Context, u *domain.User, dbID int64, schema string) (string, error)
 	Diff(ctx context.Context, u *domain.User, dbID int64, schema, desired string) (*SchemaDiff, error)

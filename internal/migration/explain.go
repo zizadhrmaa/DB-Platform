@@ -13,13 +13,11 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 )
 
-// Analysis adalah hasil EXPLAIN untuk seluruh statement di satu migration.
 type Analysis struct {
 	Analyze    bool
 	Statements []StatementPlan
 }
 
-// StatementPlan adalah hasil EXPLAIN untuk satu statement.
 type StatementPlan struct {
 	SQL         string
 	Explainable bool // false untuk DDL seperti CREATE TABLE atau ALTER TABLE
@@ -29,13 +27,12 @@ type StatementPlan struct {
 	ExecutionMs float64 // hanya terisi dengan ANALYZE
 }
 
-// PlanNode adalah satu langkah di execution plan, sudah diratakan dari
-// bentuk pohon. Depth menunjukkan kedalamannya di pohon.
+// PlanNode adalah satu node execution plan yang sudah diratakan dari pohon.
 type PlanNode struct {
 	Depth        int
-	Prefix       string // indentasi pohon untuk ditampilkan, misalnya "    -> "
-	Operation    string // misalnya Seq Scan, Index Scan, Hash Join
-	Target       string // tabel atau index yang dipakai
+	Prefix       string // misalnya "   -> "
+	Operation    string
+	Target       string
 	Condition    string
 	StartupCost  float64
 	TotalCost    float64
@@ -50,9 +47,8 @@ type PlanNode struct {
 	JoinStrategy string
 }
 
-// Perintah yang bisa di-EXPLAIN oleh PostgreSQL. Statement lain (DDL)
-// tetap dijalankan di simulasi supaya statement berikutnya melihat
-// perubahannya, tapi tidak punya plan.
+// Statement lain (DDL) tidak punya plan, tapi tetap dijalankan supaya
+// statement berikutnya melihat perubahannya.
 var explainable = map[string]bool{
 	"SELECT": true, "WITH": true, "INSERT": true, "UPDATE": true,
 	"DELETE": true, "MERGE": true, "VALUES": true, "TABLE": true,
@@ -67,13 +63,8 @@ func isExplainable(stmt string) bool {
 	return explainable[word]
 }
 
-// Explain menampilkan execution plan SQL migration tanpa mengubah database.
-//
-// Semua statement dijalankan berurutan di satu transaction yang selalu
-// di-rollback. Dengan analyze, statement benar-benar dijalankan supaya
-// waktu dan jumlah row yang sebenarnya terlihat, lalu dibatalkan. Efek di
-// luar transaction, seperti nilai sequence yang sudah terpakai, tidak ikut
-// kembali.
+// Explain menjalankan semua statement di satu transaction yang selalu
+// di-rollback. Nilai sequence yang terpakai saat ANALYZE tidak ikut kembali.
 func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, analyze bool) (*Analysis, error) {
 	if u == nil {
 		return nil, domain.ErrUnauthenticated
@@ -109,7 +100,6 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 	if e != nil {
 		return nil, dbmanager.SanitizeError(e)
 	}
-	// Apa pun hasilnya, semua perubahan dibatalkan.
 	defer tx.Rollback()
 	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
 		return nil, e
@@ -117,8 +107,7 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 	if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='30s'`); e != nil {
 		return nil, e
 	}
-	// Kunci yang sama dengan Execute, supaya analisis tidak berjalan
-	// bersamaan dengan eksekusi sungguhan di database ini.
+	// Kunci yang sama dengan Execute, supaya tidak bentrok dengan eksekusi.
 	locked, e := tryLockTarget(work, tx, dbID)
 	if e != nil {
 		return nil, e
@@ -145,8 +134,7 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 			e = runStatement(work, tx, stmt)
 		}
 		if e != nil {
-			// Statement setelah yang gagal tidak bisa dianalisis karena
-			// transaction-nya sudah batal.
+			// Transaction sudah batal, statement berikutnya tidak bisa jalan.
 			p.Error = errorMessage(e)
 			a.Statements = append(a.Statements, p)
 			break
@@ -156,10 +144,8 @@ func (s *Store) Explain(ctx context.Context, u *domain.User, dbID, id int64, ana
 	return a, nil
 }
 
-// runStatement menjalankan satu statement non-SELECT lewat QueryContext.
-// Berbeda dengan ExecContext tanpa argumen, cara ini memakai extended
-// protocol, sehingga PostgreSQL menolak teks yang berisi lebih dari satu
-// statement. Dengan begitu COMMIT tersembunyi tidak bisa ikut jalan.
+// QueryContext memakai extended protocol, jadi teks berisi lebih dari satu
+// statement ditolak dan COMMIT tersembunyi tidak bisa ikut jalan.
 func runStatement(ctx context.Context, tx *sql.Tx, stmt string) error {
 	rows, e := tx.QueryContext(ctx, stmt)
 	if e != nil {
@@ -168,7 +154,6 @@ func runStatement(ctx context.Context, tx *sql.Tx, stmt string) error {
 	return rows.Close()
 }
 
-// planJSON mengikuti bentuk keluaran EXPLAIN (FORMAT JSON) PostgreSQL.
 type planJSON struct {
 	NodeType            string     `json:"Node Type"`
 	Operation           string     `json:"Operation"`
@@ -241,8 +226,7 @@ func flatten(n planJSON, depth int, out []PlanNode) []PlanNode {
 	return out
 }
 
-// treePrefix meniru indentasi keluaran EXPLAIN biasa. Indentasi dibuat
-// sebagai teks karena CSP melarang style inline.
+// Indentasi dibuat sebagai teks karena CSP melarang style inline.
 func treePrefix(depth int) string {
 	if depth == 0 {
 		return ""
@@ -254,7 +238,7 @@ func operationLabel(n planJSON) string {
 	label := n.NodeType
 	switch {
 	case n.NodeType == "ModifyTable" && n.Operation != "":
-		label = n.Operation // Insert, Update, Delete, Merge
+		label = n.Operation
 	case n.JoinType != "" && n.JoinType != "Inner":
 		label += " (" + n.JoinType + ")"
 	case n.NodeType == "Aggregate" && n.Strategy != "":
