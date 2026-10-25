@@ -134,4 +134,10 @@ type Service interface {
 	// database target. Dengan analyze, statement benar-benar dijalankan
 	// lalu di-rollback.
 	Explain(ctx context.Context, u *domain.User, dbID, id int64, analyze bool) (*Analysis, error)
+
+	// Schemas, CurrentSchema, dan Diff dipakai halaman schema diff untuk
+	// menghasilkan kandidat SQL migration dari schema yang diinginkan.
+	Schemas(ctx context.Context, dbID int64) ([]string, error)
+	CurrentSchema(ctx context.Context, u *domain.User, dbID int64, schema string) (string, error)
+	Diff(ctx context.Context, u *domain.User, dbID int64, schema, desired string) (*SchemaDiff, error)
 }
