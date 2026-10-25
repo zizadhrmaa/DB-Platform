@@ -154,7 +154,6 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 	return nil
 }
 
-// Execute: audit status in platform DB; SQL change in target DB. Independently committed databases.
 func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error) {
 	if u == nil {
 		return nil, domain.ErrUnauthenticated
@@ -165,10 +164,8 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if e := s.Authz.Authorize(ctx, u, dbID, authz.ActionExecuteMigration); e != nil {
 		return nil, e
 	}
-	// Use independent context so aborting browser request does not interrupt migration bookkeeping.
 	work, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	// Resolve target before marking running.
 	target, e := s.Targets.Conn(work, dbID)
 	if e != nil {
 		return nil, e
@@ -178,7 +175,6 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 		return nil, e
 	}
 	defer platformTx.Rollback()
-	// Lock parent DB row: serializes starts with all other executions for the same db.
 	var locked int64
 	e = platformTx.QueryRowContext(work, `SELECT id FROM db_connections WHERE id=$1 AND is_active=true FOR UPDATE`, dbID).Scan(&locked)
 	if errors.Is(e, sql.ErrNoRows) {
@@ -214,7 +210,6 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if e != nil {
 		return nil, e
 	}
-	// Status snapshot and run are atomically created in platform DB.
 	_, e = platformTx.ExecContext(work, `UPDATE migrations SET status='running',executed_by=$1,executed_at=now(),finished_at=NULL,error_message=NULL WHERE id=$2 AND db_id=$3`, u.ID, id, dbID)
 	if e != nil {
 		return nil, e
@@ -227,7 +222,6 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if e = platformTx.Commit(); e != nil {
 		return nil, e
 	}
-	// Transaction and advisory lock on target; do NOT close shared *sql.DB.
 	resultErr := func() error {
 		tx, e := target.BeginTx(work, nil)
 		if e != nil {
@@ -240,15 +234,12 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 		if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
 			return e
 		}
-		// pg_advisory_xact_lock takes a 2-int key, scoped to this transaction.
 		if _, e = tx.ExecContext(work, `SELECT pg_advisory_xact_lock($1::integer,$2::integer)`, 3110, dbID); e != nil {
 			return e
 		}
-		// This marker commits atomically with target migration, aiding crash recovery.
 		if _, e = tx.ExecContext(work, `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); e != nil {
 			return e
 		}
-		// SQL with no bind args permits migration SQL containing multiple statements.
 		if _, e = tx.ExecContext(work, sqlText); e != nil {
 			return e
 		}
@@ -257,7 +248,6 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 		}
 		return tx.Commit()
 	}()
-	// Reconciliation marker is handled by a dedicated recovery path; see README.
 	status := StatusSuccess
 	message := ""
 	if resultErr != nil {
@@ -287,6 +277,5 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if len(runs) == 0 {
 		return nil, domain.ErrNotFound
 	}
-	// SQL failures are recorded as failed run; handler redirects to review page to show message.
 	return &runs[0], nil
 }
