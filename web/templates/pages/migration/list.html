@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Riwayat Migration</h1>
+<p><a href="/databases/{{.Data.DBID}}">Kembali ke database</a></p>
+{{if .Data.CanEdit}}<p><a href="/databases/{{.Data.DBID}}/migrations/new">Buat migration baru</a></p>{{end}}
+<table><thead><tr><th>Versi</th><th>Judul</th><th>Status</th><th>Pembuat</th><th>Waktu</th><th>Aksi</th></tr></thead><tbody>
+{{range .Data.Items}}<tr><td>{{.Version}}</td><td>{{.Title}}</td><td>{{.Status}}</td><td>{{.CreatedBy}}</td><td>{{fmtTime .CreatedAt}}</td><td><a href="/databases/{{$.Data.DBID}}/migrations/{{.ID}}">Detail</a></td></tr>{{else}}<tr><td colspan="6">Belum ada migration.</td></tr>{{end}}
+</tbody></table>
+{{end}}

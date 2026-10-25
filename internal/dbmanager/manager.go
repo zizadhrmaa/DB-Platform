@@ -17,7 +17,7 @@ import (
 )
 
 type Manager interface {
-	// Conn mengembalikan pool yang di-cache per dbID. Jangan di-Close oleh pemanggil. 
+	// Conn mengembalikan pool yang di-cache per dbID. Jangan di-Close oleh pemanggil.
 	// Error-nya ErrConnNotFound, ErrConnInactive, atau
 	// ErrConnUnavailable, dan tidak boleh memuat password atau DSN.
 	Conn(ctx context.Context, dbID int64) (*sql.DB, error)

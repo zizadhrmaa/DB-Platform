@@ -1,0 +1,134 @@
+{{/* .Data: *admin.GroupDetail */}}
+{{define "content"}}
+{{template "admin-nav"}}
+{{with .Data}}
+<h1>{{.Name}}</h1>
+{{if .Description}}<p>{{.Description}}</p>{{end}}
+
+<div class="sections">
+  <section class="card">
+    <h2>Akses database</h2>
+    {{if .Access}}
+    <div class="table-wrap">
+    <table>
+      <caption class="visually-hidden">Akses database group {{.Name}}</caption>
+      <thead>
+        <tr>
+          <th scope="col">Database</th>
+          <th scope="col">Level</th>
+          <th scope="col"><span class="visually-hidden">Aksi</span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Access}}
+        <tr>
+          <td>{{.DBName}}{{if not .DBActive}} <span class="muted">(nonaktif)</span>{{end}}</td>
+          <td>
+            <form method="post" action="/admin/groups/{{$.Data.ID}}/access" class="row-actions">
+              {{template "csrf" $}}
+              <input type="hidden" name="db_id" value="{{.DBID}}">
+              <label for="level-{{.DBID}}" class="visually-hidden">Level akses {{.DBName}}</label>
+              <select id="level-{{.DBID}}" name="level">
+                <option value="view" {{if eq .Level.String "view"}}selected{{end}}>View Only</option>
+                <option value="edit" {{if eq .Level.String "edit"}}selected{{end}}>View + Edit</option>
+              </select>
+              <button type="submit">Ubah</button>
+            </form>
+          </td>
+          <td>
+            <form method="post" action="/admin/groups/{{$.Data.ID}}/access/{{.DBID}}/delete" class="inline">
+              {{template "csrf" $}}
+              <button type="submit" class="danger">Cabut<span class="visually-hidden"> akses {{.DBName}}</span></button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p>Group ini belum punya akses ke database mana pun.</p>
+    {{end}}
+
+    {{if .Databases}}
+    <h3>Beri akses</h3>
+    <form method="post" action="/admin/groups/{{.ID}}/access" class="row-actions">
+      {{template "csrf" $}}
+      <label for="grant-db">Database</label>
+      <select id="grant-db" name="db_id" required>
+        {{range .Databases}}<option value="{{.ID}}">{{.Name}}{{if not .IsActive}} (nonaktif){{end}}</option>{{end}}
+      </select>
+      <label for="grant-level">Level</label>
+      <select id="grant-level" name="level">
+        <option value="view">View Only</option>
+        <option value="edit">View + Edit</option>
+      </select>
+      <button type="submit">Simpan akses</button>
+    </form>
+    <p class="hint">Kalau group sudah punya akses ke database itu, levelnya akan diganti.</p>
+    {{else}}
+    <p class="hint">Belum ada koneksi database. Tambahkan dulu di halaman <a href="/admin/databases">Koneksi database</a>.</p>
+    {{end}}
+  </section>
+
+  <section class="card">
+    <h2>Anggota</h2>
+    {{if .Members}}
+    <ul class="plain-list">
+      {{range .Members}}
+      <li>
+        <a href="/admin/users/{{.UserID}}">{{.Username}}</a>{{if not .IsActive}} <span class="muted">(nonaktif)</span>{{end}}
+        <form method="post" action="/admin/groups/{{$.Data.ID}}/members/{{.UserID}}/delete" class="inline">
+          {{template "csrf" $}}
+          <button type="submit" class="link-button">Keluarkan<span class="visually-hidden"> {{.Username}}</span></button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p>Group ini belum punya anggota.</p>
+    {{end}}
+
+    {{if .Candidates}}
+    <form method="post" action="/admin/groups/{{.ID}}/members" class="row-actions">
+      {{template "csrf" $}}
+      <label for="member">Tambah anggota</label>
+      <select id="member" name="user_id" required>
+        {{range .Candidates}}<option value="{{.UserID}}">{{.Username}}</option>{{end}}
+      </select>
+      <button type="submit">Tambah</button>
+    </form>
+    {{end}}
+  </section>
+
+  <section class="card">
+    <h2>Ubah group</h2>
+    <form method="post" action="/admin/groups/{{.ID}}" novalidate>
+      {{template "csrf" $}}
+      <div class="field">
+        <label for="name">Nama</label>
+        <input id="name" name="name" type="text" maxlength="100" required value="{{.Name}}">
+      </div>
+      <div class="field">
+        <label for="description">Deskripsi</label>
+        <textarea id="description" name="description" maxlength="500" rows="2">{{.Description}}</textarea>
+      </div>
+      <button type="submit">Simpan</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Hapus group</h2>
+    <form method="post" action="/admin/groups/{{.ID}}/delete">
+      {{template "csrf" $}}
+      <div class="check">
+        <input id="confirm-delete" name="confirm" type="checkbox" required>
+        <label for="confirm-delete">Saya yakin ingin menghapus group {{.Name}}</label>
+      </div>
+      <p class="hint">Semua anggota langsung kehilangan akses yang didapat dari group ini.</p>
+      <button type="submit" class="danger">Hapus group</button>
+    </form>
+  </section>
+</div>
+{{end}}
+{{end}}

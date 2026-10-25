@@ -1,0 +1,13 @@
+{{define "content"}}
+<h1>{{if .Data.Item}}Edit Migration{{else}}Buat Migration{{end}}</h1>
+<p><a href="/databases/{{.Data.DBID}}/migrations">Kembali ke riwayat</a></p>
+<form method="post" action="/databases/{{.Data.DBID}}/migrations{{if .Data.Item}}/{{.Data.Item.ID}}{{end}}">
+{{template "csrf" .}}
+<label for="migration-title">Judul migration</label>
+<input id="migration-title" name="title" required maxlength="255" value="{{.Data.Title}}">
+<label for="migration-sql">SQL migration</label>
+<textarea id="migration-sql" name="sql" rows="14" required>{{.Data.SQL}}</textarea>
+<p>SQL akan ditinjau terlebih dahulu dan tidak dijalankan saat disimpan.</p>
+<button type="submit">Simpan untuk review</button>
+</form>
+{{end}}

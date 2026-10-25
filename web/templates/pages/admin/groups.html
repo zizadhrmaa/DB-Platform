@@ -1,0 +1,48 @@
+{{/* .Data: groupsPage */}}
+{{define "content"}}
+{{template "admin-nav"}}
+<h1>Group</h1>
+{{if .Data.Groups}}
+<div class="table-wrap">
+<table>
+  <caption class="visually-hidden">Daftar group</caption>
+  <thead>
+    <tr>
+      <th scope="col">Nama</th>
+      <th scope="col">Deskripsi</th>
+      <th scope="col">Anggota</th>
+      <th scope="col">Akses database</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data.Groups}}
+    <tr>
+      <td><a href="/admin/groups/{{.ID}}">{{.Name}}</a></td>
+      <td>{{.Description}}</td>
+      <td>{{.MemberCount}}</td>
+      <td>{{.AccessCount}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<p>Belum ada group.</p>
+{{end}}
+
+<section class="card narrow">
+  <h2>Buat group</h2>
+  <form method="post" action="/admin/groups" novalidate>
+    {{template "csrf" .}}
+    <div class="field">
+      <label for="name">Nama</label>
+      <input id="name" name="name" type="text" maxlength="100" required value="{{.Data.Form.Name}}">
+    </div>
+    <div class="field">
+      <label for="description">Deskripsi (opsional)</label>
+      <textarea id="description" name="description" maxlength="500" rows="2">{{.Data.Form.Description}}</textarea>
+    </div>
+    <button type="submit">Buat group</button>
+  </form>
+</section>
+{{end}}

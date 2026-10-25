@@ -1,0 +1,11 @@
+{{/* .Data: admin.Counts */}}
+{{define "content"}}
+{{template "admin-nav"}}
+<h1>Platform Admin</h1>
+<ul class="summary">
+  <li class="card"><a href="/admin/users"><strong>{{.Data.Users}}</strong> user</a></li>
+  <li class="card"><a href="/admin/groups"><strong>{{.Data.Groups}}</strong> group</a></li>
+  <li class="card"><a href="/admin/databases"><strong>{{.Data.Databases}}</strong> koneksi database</a></li>
+</ul>
+<p>User hanya bisa mengakses database lewat group. Atur anggota group dan level aksesnya di halaman <a href="/admin/groups">Group</a>.</p>
+{{end}}

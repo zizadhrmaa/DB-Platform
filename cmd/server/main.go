@@ -11,11 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zizadhrmaa/DB-Platform/internal/admin"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
+	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
@@ -73,17 +75,39 @@ func run() error {
 	}
 	httpx.ErrorRenderer = renderer.ErrorPage
 
-	app := &App{View: renderer, Authz: &authz.Service{DB: db}}
+	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
+	go sessions.RunCleanup(ctx, time.Hour)
+
+	migrationAuthz := &authz.Service{DB: db}
+
+	migrationStore := &migration.Store{
+		DB:    db,
+		Authz: migrationAuthz,
+	}
+
+	migrationHandler := &migration.Handler{
+		Service: migrationStore,
+		View:    renderer,
+		Authz:   migrationAuthz,
+	}
+
+	app := &App{
+		DB:           db,
+		View:         renderer,
+		Admin:        &admin.Store{DB: db},
+		Authz:        &authz.Service{DB: db},
+		Sessions:     sessions,
+		LoginLimiter: auth.NewLoginLimiter(),
+		Migration:    migrationHandler,
+	}
 
 	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.
-	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog}
+	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware}
 	if cfg.DevAuthUserID != 0 {
 		slog.Warn("DEV_AUTH_USER_ID aktif, semua request login sebagai user ini", "user_id", cfg.DevAuthUserID)
 		mws = append(mws, auth.DevAuthMiddleware(db, cfg.DevAuthUserID))
 	}
-	// TODO: ganti blok di atas dengan
-	//   sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
-	//   mws = append(mws, sessions.Middleware, sessions.CSRFMiddleware)
+	mws = append(mws, sessions.CSRFMiddleware)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
