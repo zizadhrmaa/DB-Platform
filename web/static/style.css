@@ -1,4 +1,3 @@
-/* Jangan pakai style="" di template, inline style diblokir CSP. */
 :root {
   --bg: #f7f8fa; --surface: #ffffff; --text: #1b1f24; --muted: #57606a;
   --primary: #0b5cad; --primary-text: #ffffff; --border: #d0d7de;
