@@ -57,6 +57,21 @@ Platform Admin bukan level akses database. Admin tetap harus masuk ke group
 yang punya grant untuk melihat isi database. Perubahan akses langsung berlaku
 di request berikutnya. Aturannya ada di `internal/authz/policy.go`.
 
+## Fitur bonus: analisis query
+
+Di halaman review migration, user dengan akses View + Edit bisa menekan
+**Analisis query** untuk melihat execution plan setiap statement sebelum
+migration dijalankan: jenis scan, index yang dipakai, strategi join,
+estimasi cost dan jumlah row. Dengan pilihan **EXPLAIN ANALYZE**, statement
+benar-benar dijalankan sehingga waktu dan jumlah row sebenarnya ikut tampil.
+
+Semua statement dijalankan berurutan di satu transaction yang selalu
+di-rollback, jadi isi database target tidak berubah. Perintah DDL seperti
+`CREATE TABLE` tidak punya execution plan, tapi tetap dijalankan di simulasi
+supaya statement berikutnya bisa memakai hasilnya. Satu-satunya efek yang
+tidak ikut kembali adalah nilai sequence yang sudah terpakai saat ANALYZE.
+Implementasinya ada di `internal/migration/explain.go`.
+
 ## Testing
 
 ```bash
