@@ -55,19 +55,19 @@ var forbidden = []struct {
 }
 
 // stripCommentsAndStrings mengganti komentar, string, quoted identifier,
-// dan dollar-quoted string dengan spasi, termasuk titik koma di dalamnya,
-// supaya split per statement aman.
+// dan dollar-quoted string dengan spasi, termasuk titik koma di dalamnya.
+// Panjang hasilnya sama dengan aslinya, jadi posisi titik koma bisa dipakai
+// untuk memotong teks asli per statement.
 func stripCommentsAndStrings(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
-		c := s[i]
+		c, start := s[i], i
 		switch {
 		case c == '-' && i+1 < len(s) && s[i+1] == '-':
 			for i < len(s) && s[i] != '\n' {
 				i++
 			}
-			b.WriteByte(' ')
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
 			depth := 0 // komentar blok di PostgreSQL bisa bersarang
 			for i < len(s) {
@@ -84,9 +84,9 @@ func stripCommentsAndStrings(s string) string {
 					i++
 				}
 			}
-			b.WriteByte(' ')
 		case c == '\'' || c == '"':
 			q := c
+			escapes := q == '\'' && isEString(s, start)
 			i++
 			for i < len(s) {
 				if s[i] == q {
@@ -97,32 +97,66 @@ func stripCommentsAndStrings(s string) string {
 					i++
 					break
 				}
-				if q == '\'' && s[i] == '\\' && i+1 < len(s) { // E'..\'..'
+				if escapes && s[i] == '\\' && i+1 < len(s) { // E'..\'..'
 					i += 2
 					continue
 				}
 				i++
 			}
-			b.WriteByte(' ')
 		case c == '$':
-			if tag, ok := dollarTag(s[i:]); ok {
-				end := strings.Index(s[i+len(tag):], tag)
-				if end < 0 {
-					i = len(s)
-				} else {
-					i += len(tag) + end + len(tag)
-				}
-				b.WriteByte(' ')
-			} else {
+			tag, ok := dollarTag(s[i:])
+			if !ok {
 				b.WriteByte(c)
 				i++
+				continue
+			}
+			end := strings.Index(s[i+len(tag):], tag)
+			if end < 0 {
+				i = len(s)
+			} else {
+				i += len(tag) + end + len(tag)
 			}
 		default:
 			b.WriteByte(c)
 			i++
+			continue
 		}
+		b.WriteString(strings.Repeat(" ", min(i, len(s))-start))
 	}
 	return b.String()
+}
+
+// isEString mengecek apakah tanda kutip di posisi i adalah awal string
+// E'...'. Hanya di string seperti ini backslash berfungsi sebagai escape;
+// di string biasa backslash adalah karakter biasa.
+func isEString(s string, i int) bool {
+	if i == 0 || (s[i-1] != 'E' && s[i-1] != 'e') {
+		return false
+	}
+	return i == 1 || !isIdentChar(s[i-2])
+}
+
+func isIdentChar(c byte) bool {
+	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+// splitStatements memecah SQL per statement. Titik koma di dalam string,
+// komentar, atau body fungsi tidak dianggap pemisah. Statement yang isinya
+// hanya komentar dibuang.
+func splitStatements(sql string) []string {
+	masked := stripCommentsAndStrings(sql)
+	var out []string
+	start := 0
+	for i := 0; i <= len(masked); i++ {
+		if i < len(masked) && masked[i] != ';' {
+			continue
+		}
+		if strings.TrimSpace(masked[start:i]) != "" {
+			out = append(out, strings.TrimSpace(sql[start:i]))
+		}
+		start = i + 1
+	}
+	return out
 }
 
 var dollarTagRe = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$`)
