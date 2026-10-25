@@ -6,12 +6,6 @@ import (
 	"fmt"
 )
 
-// Recover menyelaraskan migration berstatus running
-// dengan bukti COMMIT pada database target.
-//
-// Jika bukti COMMIT ditemukan, status dipulihkan menjadi success.
-// Jika tidak ditemukan, status running dibiarkan untuk pemeriksaan
-// lebih lanjut agar tidak keliru menyatakan eksekusi aktif sebagai gagal.
 func (s *Store) Recover(ctx context.Context) error {
 	if s.DB == nil || s.Targets == nil {
 		return fmt.Errorf("recovery dependencies not initialized")
