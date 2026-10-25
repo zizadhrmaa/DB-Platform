@@ -1,21 +1,68 @@
+
 {{/* .Data: []authz.DBAccess */}}
 {{define "content"}}
-<h1>Pilih Database</h1>
-{{if .Data}}
-<table>
-  <caption class="visually-hidden">Database yang dapat Anda akses</caption>
-  <thead><tr><th scope="col">Nama</th><th scope="col">Akses Anda</th><th scope="col"><span class="visually-hidden">Aksi</span></th></tr></thead>
-  <tbody>
-  {{range .Data}}
-    <tr>
-      <td>{{.Name}}</td>
-      <td><span class="badge badge-{{.Level.String}}">{{.Level.Label}}</span></td>
-      <td><a href="/databases/{{.DBID}}">Buka {{.Name}}</a></td>
-    </tr>
+<section class="peach-workspace">
+  <div class="peach-hero">
+    <div>
+      <p class="peach-eyebrow">✿ PENGELOLAAN DATABASE</p>
+      <h1>Selamat Datang di DB Platform</h1>
+      <p class="peach-description">
+        Kelola database, lihat struktur tabel, dan jalankan
+        migrasi melalui satu platform yang terintegrasi.
+      </p>
+    </div>
+    <div class="peach-hero-icon" aria-hidden="true">✿</div>
+  </div>
+
+  {{if .Data}}
+  <div class="peach-section-heading">
+    <div>
+      <h2>Daftar Database</h2>
+      <p>Database yang dapat Anda akses sesuai hak akses yang diberikan.</p>
+    </div>
+  </div>
+
+  <div class="peach-db-grid">
+    {{range .Data}}
+    <article class="peach-db-card">
+      <div class="peach-card-top">
+        <div class="peach-db-icon" aria-hidden="true">▤</div>
+        <span class="badge badge-{{.Level.String}}">
+          {{.Level.Label}}
+        </span>
+      </div>
+
+      <div class="peach-card-info">
+        <h3>{{.Name}}</h3>
+        <p>Database PostgreSQL</p>
+      </div>
+
+      <a class="peach-open-button"
+         href="/databases/{{.DBID}}">
+        Buka Database <span aria-hidden="true">→</span>
+      </a>
+    </article>
+    {{end}}
+
+    <aside class="peach-decoration-card">
+      <div class="peach-decoration-icon" aria-hidden="true">✿</div>
+      <h3>Pengelolaan Terintegrasi</h3>
+      <p>
+        Akses informasi tabel, kelola hak akses,
+        dan tinjau riwayat migrasi database.
+      </p>
+    </aside>
+  </div>
+  {{else}}
+  <div class="peach-empty-state">
+    <div aria-hidden="true">✿</div>
+    <h2>Belum Ada Database</h2>
+    <p>
+      Anda belum memiliki akses ke database.
+      Silakan hubungi Platform Admin untuk
+      mendapatkan hak akses yang sesuai.
+    </p>
+  </div>
   {{end}}
-  </tbody>
-</table>
-{{else}}
-<p>Anda belum memiliki akses ke database mana pun. Hubungi Platform Admin agar ditambahkan ke group yang sesuai.</p>
-{{end}}
+</section>
 {{end}}
