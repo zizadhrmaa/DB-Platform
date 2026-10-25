@@ -1,10 +1,7 @@
 package main
 
 import (
-<<<<<<< HEAD
 	"database/sql"
-=======
->>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,10 +9,7 @@ import (
 	"strings"
 	"testing"
 
-<<<<<<< HEAD
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
-=======
->>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
@@ -62,25 +56,16 @@ func (b *browser) do(method, path string, form url.Values) *httptest.ResponseRec
 
 var csrfInput = regexp.MustCompile(`name="csrf_token" value="([^"]*)"`)
 
-<<<<<<< HEAD
 // newHandler merakit aplikasi lengkap di atas database test, sama seperti
 // di main.go.
 func newHandler(t *testing.T, db *sql.DB) http.Handler {
 	t.Helper()
-=======
-func newLoginServer(t *testing.T) *browser {
-	t.Helper()
-	db := testutil.PlatformDB(t)
-	testutil.MustUser(t, db, "alice", false)
-
->>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	r, err := view.New(web.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	httpx.ErrorRenderer = r.ErrorPage
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(false))
-<<<<<<< HEAD
 	app := &App{
 		DB:           db,
 		View:         r,
@@ -97,11 +82,6 @@ func newLoginServer(t *testing.T) *browser {
 	db := testutil.PlatformDB(t)
 	testutil.MustUser(t, db, "alice", false)
 	return &browser{t: t, h: newHandler(t, db)}
-=======
-	app := &App{DB: db, View: r, Authz: &authz.Service{DB: db}, Sessions: sessions, LoginLimiter: auth.NewLoginLimiter()}
-	h := httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, sessions.Middleware, sessions.CSRFMiddleware)
-	return &browser{t: t, h: h}
->>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 }
 
 func TestLoginLogoutFlow(t *testing.T) {

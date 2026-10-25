@@ -59,7 +59,6 @@ td.null { color: var(--muted); font-style: italic; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 pre { background: #f0f2f4; padding: 1rem; overflow-x: auto; border-radius: var(--radius); }
 
-<<<<<<< HEAD
 .hint { color: var(--muted); font-size: .875rem; margin: .25rem 0 0; }
 .muted { color: var(--muted); }
 a.button { display: inline-block; padding: .5rem 1rem; border-radius: var(--radius);
@@ -84,8 +83,5 @@ a.button { display: inline-block; padding: .5rem 1rem; border-radius: var(--radi
 
 @media (min-width: 768px) {
   .summary { grid-template-columns: repeat(3, 1fr); }
-=======
-@media (min-width: 768px) {
->>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
   main { padding: 0 2rem; }
 }
