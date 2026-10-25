@@ -129,4 +129,9 @@ type Service interface {
 	// Saat start, migration yang masih running karena server crash diubah
 	// jadi failed.
 	Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error)
+
+	// Explain menampilkan execution plan SQL migration tanpa mengubah
+	// database target. Dengan analyze, statement benar-benar dijalankan
+	// lalu di-rollback.
+	Explain(ctx context.Context, u *domain.User, dbID, id int64, analyze bool) (*Analysis, error)
 }

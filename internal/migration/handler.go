@@ -25,6 +25,8 @@ type Page struct {
 	CanEdit bool
 	Title   string
 	SQL     string
+
+	Analysis *Analysis // hasil EXPLAIN, hanya terisi setelah tombol analisis ditekan
 }
 
 func (h *Handler) ids(r *http.Request) (int64, int64, error) {
@@ -48,6 +50,12 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, e error) { httpx.
 // conflict menampilkan halaman detail beserta alasan aksi ditolak, misalnya
 // versi sebelumnya belum dijalankan atau migration sudah sukses.
 func (h *Handler) conflict(w http.ResponseWriter, r *http.Request, dbID, id int64, reason error) {
+	h.detail(w, r, http.StatusConflict, dbID, id, reason.Error(), nil)
+}
+
+// detail merender halaman detail migration, dengan pesan error atau hasil
+// analisis query kalau ada.
+func (h *Handler) detail(w http.ResponseWriter, r *http.Request, status int, dbID, id int64, errMsg string, a *Analysis) {
 	m, e := h.Service.Get(r.Context(), dbID, id)
 	if e != nil {
 		h.fail(w, r, e)
@@ -58,10 +66,10 @@ func (h *Handler) conflict(w http.ResponseWriter, r *http.Request, dbID, id int6
 		h.fail(w, r, e)
 		return
 	}
-	h.View.Render(w, r, http.StatusConflict, "migration/detail", view.PageData{
+	h.View.Render(w, r, status, "migration/detail", view.PageData{
 		Title: fmt.Sprintf("Migration v%d", m.Version),
-		Error: reason.Error(),
-		Data:  Page{DBID: dbID, Item: m, Runs: runs, CanEdit: h.editor(r, dbID)},
+		Error: errMsg,
+		Data:  Page{DBID: dbID, Item: m, Runs: runs, CanEdit: h.editor(r, dbID), Analysis: a},
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -117,17 +125,32 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, e)
 		return
 	}
-	m, e := h.Service.Get(r.Context(), dbID, id)
+	h.detail(w, r, http.StatusOK, dbID, id, "", nil)
+}
+
+// Explain menampilkan execution plan SQL migration di halaman detail.
+func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
+	dbID, id, e := h.ids(r)
 	if e != nil {
 		h.fail(w, r, e)
 		return
 	}
-	runs, e := h.Service.Runs(r.Context(), dbID, id)
-	if e != nil {
+	if e = httpx.ParseForm(w, r, httpx.MaxFormBytes); e != nil {
 		h.fail(w, r, e)
 		return
 	}
-	h.View.Render(w, r, 200, "migration/detail", view.PageData{Title: fmt.Sprintf("Migration v%d", m.Version), Data: Page{DBID: dbID, Item: m, Runs: runs, CanEdit: h.editor(r, dbID)}})
+	u, _ := auth.CurrentUser(r.Context())
+	a, e := h.Service.Explain(r.Context(), u, dbID, id, r.PostFormValue("analyze") == "on")
+	switch {
+	case errors.Is(e, domain.ErrConflict):
+		h.conflict(w, r, dbID, id, e)
+	case errors.Is(e, domain.ErrInvalidInput):
+		h.detail(w, r, http.StatusUnprocessableEntity, dbID, id, e.Error(), nil)
+	case e != nil:
+		h.fail(w, r, e)
+	default:
+		h.detail(w, r, http.StatusOK, dbID, id, "", a)
+	}
 }
 func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 	dbID, id, e := h.ids(r)

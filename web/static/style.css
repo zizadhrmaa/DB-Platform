@@ -84,6 +84,7 @@ a.button { display: inline-block; padding: .5rem 1rem; border-radius: var(--radi
 .breadcrumb { font-size: .875rem; margin-bottom: .5rem; }
 .db-access { color: var(--muted); margin-top: 0; }
 table.data td { white-space: pre-wrap; word-break: break-word; }
+table.plan td.plan-op { white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .pager { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-top: 1rem; }
 
 @media (min-width: 768px) {

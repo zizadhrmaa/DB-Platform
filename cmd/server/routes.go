@@ -69,6 +69,7 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Update)))
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/execute", db(authz.ActionExecuteMigration, http.HandlerFunc(app.Migration.Execute)))
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/discard", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Discard)))
+	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/explain", db(authz.ActionExecuteMigration, http.HandlerFunc(app.Migration.Explain)))
 
 	// Platform Admin (user, group, akses)
 	mux.Handle("GET /admin", adminOnly(http.HandlerFunc(app.adminHome)))

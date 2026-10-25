@@ -212,3 +212,47 @@ func TestMigrationAccessControl(t *testing.T) {
 		t.Fatal("migration tetap jalan padahal akses sudah dicabut")
 	}
 }
+
+func TestMigrationExplain(t *testing.T) {
+	e := newMigrationEnv(t)
+	if _, err := e.target.Exec(`CREATE TABLE produk (id INT PRIMARY KEY, nama TEXT);
+		INSERT INTO produk SELECT g, 'p' || g FROM generate_series(1, 500) g;`); err != nil {
+		t.Fatal(err)
+	}
+	bob := loginAs(t, e.h, "bob", testutil.TestPassword)
+	carol := loginAs(t, e.h, "carol", testutil.TestPassword)
+	v1 := createMigration(t, bob, e.base, "hapus produk", `DELETE FROM produk WHERE id = 7;
+UPDATE produk SET nama = '<b>x</b>' WHERE id = 8;`)
+
+	if page := bob.do("GET", v1, nil).Body.String(); !strings.Contains(page, "Analisis query") {
+		t.Error("form analisis tidak muncul untuk View + Edit")
+	}
+	if page := carol.do("GET", v1, nil).Body.String(); strings.Contains(page, "Analisis query") {
+		t.Error("form analisis muncul untuk View Only")
+	}
+
+	rr := bob.post(v1+"/explain", url.Values{"analyze": {"on"}})
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(body, "Hasil EXPLAIN ANALYZE") {
+		t.Fatalf("explain analyze: status %d", rr.Code)
+	}
+	for _, want := range []string{"Delete", "Update", "produk_pkey", "Waktu aktual", "&lt;b&gt;x"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hasil analisis tidak memuat %q", want)
+		}
+	}
+	if strings.Contains(body, "<b>x</b>") {
+		t.Error("SQL di hasil analisis tidak di-escape")
+	}
+	var n int
+	if err := e.target.QueryRow(`SELECT count(*) FROM produk WHERE id = 7 OR (id = 8 AND nama = 'p8')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("analisis mengubah data: n=%d err=%v", n, err)
+	}
+
+	if rr := bob.post(v1+"/explain", nil); rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "Waktu aktual") {
+		t.Errorf("explain tanpa analyze: %d", rr.Code)
+	}
+	if rr := carol.post(v1+"/explain", url.Values{"analyze": {"on"}}); rr.Code != http.StatusForbidden {
+		t.Errorf("View Only explain: %d, want 403", rr.Code)
+	}
+}
