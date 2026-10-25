@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
-	"strings"
-	"time"
 )
 
 type Store struct {
@@ -126,10 +129,11 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 	}
 	n, _ := r.RowsAffected()
 	if n == 0 {
-		if _, e = s.Get(ctx, dbID, id); e != nil {
+		m, e := s.Get(ctx, dbID, id)
+		if e != nil {
 			return e
 		}
-		return domain.ErrConflict
+		return fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status)
 	}
 	return nil
 }
@@ -146,15 +150,21 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 	}
 	n, _ := r.RowsAffected()
 	if n == 0 {
-		if _, e = s.Get(ctx, dbID, id); e != nil {
+		m, e := s.Get(ctx, dbID, id)
+		if e != nil {
 			return e
 		}
-		return domain.ErrConflict
+		return fmt.Errorf("%w: migration berstatus %s tidak bisa dibatalkan", domain.ErrConflict, m.Status)
 	}
 	return nil
 }
 
-// Execute: audit status in platform DB; SQL change in target DB. Independently committed databases.
+// Execute menjalankan SQL migration di database target.
+//
+// Urutannya: kunci advisory di target diambil dulu, baru status diubah ke
+// running di database platform. Jadi status running hanya ada selama kunci
+// itu dipegang, dan Recover bisa membedakan eksekusi yang masih berjalan
+// dengan eksekusi yang terputus.
 func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error) {
 	if u == nil {
 		return nil, domain.ErrUnauthenticated
@@ -165,119 +175,65 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if e := s.Authz.Authorize(ctx, u, dbID, authz.ActionExecuteMigration); e != nil {
 		return nil, e
 	}
-	// Use independent context so aborting browser request does not interrupt migration bookkeeping.
+	// Context terpisah supaya pencatatan tetap selesai walaupun user menutup tab.
 	work, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	// Resolve target before marking running.
 	target, e := s.Targets.Conn(work, dbID)
 	if e != nil {
 		return nil, e
 	}
-	platformTx, e := s.DB.BeginTx(work, nil)
+
+	tx, e := target.BeginTx(work, nil)
+	if e != nil {
+		return nil, dbmanager.SanitizeError(e)
+	}
+	defer tx.Rollback()
+	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
+		return nil, e
+	}
+	if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
+		return nil, e
+	}
+	locked, e := tryLockTarget(work, tx, dbID)
 	if e != nil {
 		return nil, e
 	}
-	defer platformTx.Rollback()
-	// Lock parent DB row: serializes starts with all other executions for the same db.
-	var locked int64
-	e = platformTx.QueryRowContext(work, `SELECT id FROM db_connections WHERE id=$1 AND is_active=true FOR UPDATE`, dbID).Scan(&locked)
-	if errors.Is(e, sql.ErrNoRows) {
-		return nil, domain.ErrNotFound
+	if !locked {
+		return nil, fmt.Errorf("%w: ada migration lain yang sedang dijalankan di database ini", domain.ErrConflict)
 	}
+	// Selama kunci dipegang, migration berstatus running pasti sisa eksekusi
+	// yang terputus, jadi dibereskan dulu sebelum mengecek giliran.
+	if e = s.reconcile(work, tx, dbID); e != nil {
+		return nil, e
+	}
+
+	sqlText, version, runID, e := s.start(work, u, dbID, id)
 	if e != nil {
 		return nil, e
 	}
-	rows, e := platformTx.QueryContext(work, `SELECT id,version,status FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
-	if e != nil {
-		return nil, e
-	}
-	list := []Migration{}
-	for rows.Next() {
-		var m Migration
-		if e = rows.Scan(&m.ID, &m.Version, &m.Status); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		list = append(list, m)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	if e = CheckExecutable(list, id); e != nil {
-		return nil, e
-	}
-	var sqlText string
-	var version int
-	e = platformTx.QueryRowContext(work, `SELECT sql_text,version FROM migrations WHERE id=$1 AND db_id=$2`, id, dbID).Scan(&sqlText, &version)
-	if e != nil {
-		return nil, e
-	}
-	// Status snapshot and run are atomically created in platform DB.
-	_, e = platformTx.ExecContext(work, `UPDATE migrations SET status='running',executed_by=$1,executed_at=now(),finished_at=NULL,error_message=NULL WHERE id=$2 AND db_id=$3`, u.ID, id, dbID)
-	if e != nil {
-		return nil, e
-	}
-	var runID int64
-	e = platformTx.QueryRowContext(work, `INSERT INTO migration_runs(migration_id,sql_text,executed_by,status) VALUES($1,$2,$3,'running') RETURNING id`, id, sqlText, u.ID).Scan(&runID)
-	if e != nil {
-		return nil, e
-	}
-	if e = platformTx.Commit(); e != nil {
-		return nil, e
-	}
-	// Transaction and advisory lock on target; do NOT close shared *sql.DB.
+
 	resultErr := func() error {
-		tx, e := target.BeginTx(work, nil)
-		if e != nil {
+		// Penanda ini ikut commit bersama SQL migration, dan ditulis sebelum
+		// SQL user supaya SET search_path di dalamnya tidak memindahkan lokasinya.
+		if _, e := tx.ExecContext(work, `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); e != nil {
 			return e
 		}
-		defer tx.Rollback()
-		if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
+		if _, e := tx.ExecContext(work, `INSERT INTO _dbplatform_history(version) VALUES($1)`, version); e != nil {
 			return e
 		}
-		if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
-			return e
-		}
-		// pg_advisory_xact_lock takes a 2-int key, scoped to this transaction.
-		if _, e = tx.ExecContext(work, `SELECT pg_advisory_xact_lock($1::integer,$2::integer)`, 3110, dbID); e != nil {
-			return e
-		}
-		// This marker commits atomically with target migration, aiding crash recovery.
-		if _, e = tx.ExecContext(work, `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); e != nil {
-			return e
-		}
-		// SQL with no bind args permits migration SQL containing multiple statements.
-		if _, e = tx.ExecContext(work, sqlText); e != nil {
-			return e
-		}
-		if _, e = tx.ExecContext(work, `INSERT INTO _dbplatform_history(version) VALUES($1)`, version); e != nil {
+		// Tanpa argumen, SQL migration boleh berisi banyak statement.
+		if _, e := tx.ExecContext(work, sqlText); e != nil {
 			return e
 		}
 		return tx.Commit()
 	}()
-	// Reconciliation marker is handled by a dedicated recovery path; see README.
 	status := StatusSuccess
 	message := ""
 	if resultErr != nil {
 		status = StatusFailed
-		message = resultErr.Error()
+		message = errorMessage(resultErr)
 	}
-	finishTx, e := s.DB.BeginTx(work, nil)
-	if e != nil {
-		return nil, e
-	}
-	defer finishTx.Rollback()
-	_, e = finishTx.ExecContext(work, `UPDATE migrations SET status=$1,finished_at=now(),error_message=$2 WHERE id=$3 AND db_id=$4`, status, message, id, dbID)
-	if e != nil {
-		return nil, e
-	}
-	_, e = finishTx.ExecContext(work, `UPDATE migration_runs SET status=$1,finished_at=now(),error_message=$2 WHERE id=$3 AND migration_id=$4`, status, message, runID, id)
-	if e != nil {
-		return nil, e
-	}
-	if e = finishTx.Commit(); e != nil {
+	if e = s.finish(work, id, dbID, runID, status, message); e != nil {
 		return nil, e
 	}
 	runs, e := s.Runs(work, dbID, id)
@@ -287,6 +243,98 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if len(runs) == 0 {
 		return nil, domain.ErrNotFound
 	}
-	// SQL failures are recorded as failed run; handler redirects to review page to show message.
+	// Kegagalan SQL dicatat sebagai run failed; handler menampilkannya di halaman review.
 	return &runs[0], nil
+}
+
+// start mengunci migration database ini, memastikan id adalah giliran
+// berikutnya, lalu menandainya running.
+func (s *Store) start(work context.Context, u *domain.User, dbID, id int64) (string, int, int64, error) {
+	platformTx, e := s.DB.BeginTx(work, nil)
+	if e != nil {
+		return "", 0, 0, e
+	}
+	defer platformTx.Rollback()
+	var locked int64
+	e = platformTx.QueryRowContext(work, `SELECT id FROM db_connections WHERE id=$1 AND is_active=true FOR UPDATE`, dbID).Scan(&locked)
+	if errors.Is(e, sql.ErrNoRows) {
+		return "", 0, 0, domain.ErrNotFound
+	}
+	if e != nil {
+		return "", 0, 0, e
+	}
+	rows, e := platformTx.QueryContext(work, `SELECT id,version,status FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
+	if e != nil {
+		return "", 0, 0, e
+	}
+	list := []Migration{}
+	for rows.Next() {
+		var m Migration
+		if e = rows.Scan(&m.ID, &m.Version, &m.Status); e != nil {
+			rows.Close()
+			return "", 0, 0, e
+		}
+		list = append(list, m)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return "", 0, 0, e
+	}
+	if e = CheckExecutable(list, id); e != nil {
+		return "", 0, 0, e
+	}
+	var sqlText string
+	var version int
+	e = platformTx.QueryRowContext(work, `SELECT sql_text,version FROM migrations WHERE id=$1 AND db_id=$2`, id, dbID).Scan(&sqlText, &version)
+	if e != nil {
+		return "", 0, 0, e
+	}
+	_, e = platformTx.ExecContext(work, `UPDATE migrations SET status='running',executed_by=$1,executed_at=now(),finished_at=NULL,error_message=NULL WHERE id=$2 AND db_id=$3`, u.ID, id, dbID)
+	if e != nil {
+		return "", 0, 0, e
+	}
+	var runID int64
+	e = platformTx.QueryRowContext(work, `INSERT INTO migration_runs(migration_id,sql_text,executed_by,status) VALUES($1,$2,$3,'running') RETURNING id`, id, sqlText, u.ID).Scan(&runID)
+	if e != nil {
+		return "", 0, 0, e
+	}
+	return sqlText, version, runID, platformTx.Commit()
+}
+
+func (s *Store) finish(work context.Context, id, dbID, runID int64, status Status, message string) error {
+	finishTx, e := s.DB.BeginTx(work, nil)
+	if e != nil {
+		return e
+	}
+	defer finishTx.Rollback()
+	_, e = finishTx.ExecContext(work, `UPDATE migrations SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND db_id=$4`, status, message, id, dbID)
+	if e != nil {
+		return e
+	}
+	_, e = finishTx.ExecContext(work, `UPDATE migration_runs SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND migration_id=$4`, status, message, runID, id)
+	if e != nil {
+		return e
+	}
+	return finishTx.Commit()
+}
+
+// errorMessage mengambil pesan error PostgreSQL. Error lain, misalnya
+// koneksi putus, diganti pesan umum supaya detail koneksi tidak tersimpan.
+func errorMessage(e error) string {
+	var pe *pgconn.PgError
+	if errors.As(e, &pe) {
+		msg := pe.Message
+		if pe.Detail != "" {
+			msg += ". Detail: " + pe.Detail
+		}
+		if pe.Position > 0 {
+			msg += fmt.Sprintf(" (posisi %d)", pe.Position)
+		}
+		return msg
+	}
+	if errors.Is(e, context.DeadlineExceeded) {
+		return "Eksekusi melewati batas waktu."
+	}
+	return "Koneksi ke database target terputus saat eksekusi."
 }

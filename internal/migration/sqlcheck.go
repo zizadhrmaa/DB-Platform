@@ -8,22 +8,15 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 )
 
-// MaxSQLBytes membatasi ukuran SQL satu migration.
 const MaxSQLBytes = 512 << 10 // 512 KiB
 
-// ValidateSQL menolak SQL yang PASTI tidak cocok dijalankan di dalam
-// transaction yang dibungkus platform:
-//
-//  1. Kontrol transaksi eksplisit (BEGIN/COMMIT/ROLLBACK/START TRANSACTION/END):
-//     akan merusak jaminan commit/rollback platform.
-//  2. Perintah yang PostgreSQL tolak di dalam transaction block
-//     (CREATE INDEX CONCURRENTLY, VACUUM, CREATE/DROP DATABASE, ALTER SYSTEM,
-//     CREATE/DROP TABLESPACE, REINDEX ... CONCURRENTLY, DROP INDEX CONCURRENTLY).
-//
-// Komentar dan string literal diabaikan dulu agar teks seperti
-// 'BEGIN' di dalam data tidak salah terdeteksi. Ini pemeriksaan ramah
-// pengguna, BUKAN batas keamanan: user Edit memang berhak menjalankan SQL
-// apa pun yang diizinkan role database target.
+// ValidateSQL menolak perintah kontrol transaksi dan perintah yang tidak
+// bisa dijalankan PostgreSQL di dalam transaction block. Komentar dan
+// string dibuang dulu supaya 'BEGIN' di dalam data tidak ikut terdeteksi.
+
+// Ini bukan pengaman: user edit memang boleh menjalankan SQL apa saja yang
+// diizinkan role database target. Tujuannya cuma memberi pesan error
+// yang lebih jelas.
 func ValidateSQL(sql string) error {
 	if len(sql) > MaxSQLBytes {
 		return fmt.Errorf("%w: SQL melebihi %d KiB", domain.ErrInvalidInput, MaxSQLBytes>>10)
@@ -52,7 +45,7 @@ var forbidden = []struct {
 }{
 	{regexp.MustCompile(`^(BEGIN|COMMIT|ROLLBACK|END|ABORT|START TRANSACTION)\b`),
 		"jangan menulis BEGIN/COMMIT/ROLLBACK; platform sudah membungkus migration dalam transaction"},
-	{regexp.MustCompile(`^(CREATE|DROP) (UNIQUE )?INDEX CONCURRENTLY\b|^CREATE UNIQUE INDEX CONCURRENTLY\b`),
+	{regexp.MustCompile(`^(CREATE|DROP) (UNIQUE )?INDEX CONCURRENTLY\b`),
 		"INDEX CONCURRENTLY tidak bisa dijalankan di dalam transaction"},
 	{regexp.MustCompile(`^REINDEX\b.*\bCONCURRENTLY\b`), "REINDEX CONCURRENTLY tidak bisa dijalankan di dalam transaction"},
 	{regexp.MustCompile(`^VACUUM\b`), "VACUUM tidak bisa dijalankan di dalam transaction"},
@@ -61,9 +54,9 @@ var forbidden = []struct {
 	{regexp.MustCompile(`^ALTER SYSTEM\b`), "ALTER SYSTEM tidak bisa dijalankan di dalam transaction"},
 }
 
-// stripCommentsAndStrings mengganti komentar (-- dan /* */), string
-// '...', E'...', identifier "..." dan dollar-quoted $tag$...$tag$ dengan spasi.
-// Titik koma di dalamnya ikut hilang sehingga split per statement aman.
+// stripCommentsAndStrings mengganti komentar, string, quoted identifier,
+// dan dollar-quoted string dengan spasi, termasuk titik koma di dalamnya,
+// supaya split per statement aman.
 func stripCommentsAndStrings(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -76,7 +69,7 @@ func stripCommentsAndStrings(s string) string {
 			}
 			b.WriteByte(' ')
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
-			depth := 0 // PostgreSQL mendukung komentar blok bersarang
+			depth := 0 // komentar blok di PostgreSQL bisa bersarang
 			for i < len(s) {
 				if s[i] == '/' && i+1 < len(s) && s[i+1] == '*' {
 					depth++
@@ -97,14 +90,14 @@ func stripCommentsAndStrings(s string) string {
 			i++
 			for i < len(s) {
 				if s[i] == q {
-					if i+1 < len(s) && s[i+1] == q { // '' atau "" = escape
+					if i+1 < len(s) && s[i+1] == q { // '' atau ""
 						i += 2
 						continue
 					}
 					i++
 					break
 				}
-				if q == '\'' && s[i] == '\\' && i+1 < len(s) { // aman untuk E'..\'..'
+				if q == '\'' && s[i] == '\\' && i+1 < len(s) { // E'..\'..'
 					i += 2
 					continue
 				}

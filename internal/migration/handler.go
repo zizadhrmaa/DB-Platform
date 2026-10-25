@@ -44,6 +44,26 @@ func (h *Handler) editor(r *http.Request, dbID int64) bool {
 	return e == nil && ok
 }
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, e error) { httpx.Error(w, r, e) }
+
+// conflict menampilkan halaman detail beserta alasan aksi ditolak, misalnya
+// versi sebelumnya belum dijalankan atau migration sudah sukses.
+func (h *Handler) conflict(w http.ResponseWriter, r *http.Request, dbID, id int64, reason error) {
+	m, e := h.Service.Get(r.Context(), dbID, id)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	runs, e := h.Service.Runs(r.Context(), dbID, id)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	h.View.Render(w, r, http.StatusConflict, "migration/detail", view.PageData{
+		Title: fmt.Sprintf("Migration v%d", m.Version),
+		Error: reason.Error(),
+		Data:  Page{DBID: dbID, Item: m, Runs: runs, CanEdit: h.editor(r, dbID)},
+	})
+}
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	dbID, _, e := h.ids(r)
 	if e != nil {
@@ -121,7 +141,7 @@ func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !m.Status.Editable() {
-		h.fail(w, r, domain.ErrConflict)
+		h.conflict(w, r, dbID, id, fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status))
 		return
 	}
 	h.View.Render(w, r, 200, "migration/form", view.PageData{Title: "Edit Migration", Data: Page{DBID: dbID, Item: m, Title: m.Title, SQL: m.SQL, CanEdit: true}})
@@ -145,6 +165,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			h.form(w, r, Page{DBID: dbID, Item: m, Title: title, SQL: sqlText, CanEdit: true}, e)
 			return
 		}
+		if errors.Is(e, domain.ErrConflict) {
+			h.conflict(w, r, dbID, id, e)
+			return
+		}
 		h.fail(w, r, e)
 		return
 	}
@@ -158,6 +182,10 @@ func (h *Handler) Discard(w http.ResponseWriter, r *http.Request) {
 	}
 	u, _ := auth.CurrentUser(r.Context())
 	if e = h.Service.Discard(r.Context(), u, dbID, id); e != nil {
+		if errors.Is(e, domain.ErrConflict) {
+			h.conflict(w, r, dbID, id, e)
+			return
+		}
 		h.fail(w, r, e)
 		return
 	}
@@ -172,6 +200,10 @@ func (h *Handler) Execute(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.CurrentUser(r.Context())
 	_, e = h.Service.Execute(r.Context(), u, dbID, id)
 	if e != nil {
+		if errors.Is(e, domain.ErrConflict) {
+			h.conflict(w, r, dbID, id, e)
+			return
+		}
 		h.fail(w, r, e)
 		return
 	}
