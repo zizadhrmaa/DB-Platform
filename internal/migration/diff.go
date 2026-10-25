@@ -13,8 +13,6 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 )
 
-// SchemaDiff adalah perbedaan antara schema saat ini dan schema yang
-// diinginkan, beserta kandidat SQL untuk menyamakannya.
 type SchemaDiff struct {
 	Schema  string
 	Changes []SchemaChange
@@ -28,15 +26,12 @@ type SchemaChange struct {
 	Destructive bool // menghapus data
 }
 
-// Bagian schema yang dibandingkan: tabel biasa beserta kolom, constraint,
-// dan index-nya. View, function, trigger, tipe custom, dan tabel partisi
-// tidak ikut.
+// View, function, trigger, tipe custom, dan tabel partisi tidak ikut.
 type snapshot struct {
 	tables map[string]*tableDef
 	names  []string
-	// Foreign key ke tabel di schema lain. DDL yang diinginkan dijalankan
-	// di tabel temporary, yang tidak bisa punya FK ke tabel biasa, jadi FK
-	// seperti ini tidak dibandingkan dan tidak pernah diubah.
+	// FK ke schema lain. Tabel temporary tidak bisa punya FK ke tabel biasa,
+	// jadi FK seperti ini tidak dibandingkan dan tidak pernah diubah.
 	external []string
 }
 
@@ -64,7 +59,6 @@ type indexDef struct {
 	name, quoted, def string
 }
 
-// Schemas mengembalikan schema milik user di database target.
 func (s *Store) Schemas(ctx context.Context, dbID int64) ([]string, error) {
 	target, e := s.Targets.Conn(ctx, dbID)
 	if e != nil {
@@ -89,8 +83,6 @@ func (s *Store) Schemas(ctx context.Context, dbID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
-// CurrentSchema menghasilkan DDL schema saat ini, untuk titik awal form
-// schema yang diinginkan.
 func (s *Store) CurrentSchema(ctx context.Context, u *domain.User, dbID int64, schema string) (string, error) {
 	var ddl string
 	e := s.inTarget(ctx, u, dbID, func(work context.Context, tx *sql.Tx) error {
@@ -104,12 +96,8 @@ func (s *Store) CurrentSchema(ctx context.Context, u *domain.User, dbID int64, s
 	return ddl, e
 }
 
-// Diff membandingkan schema saat ini dengan schema hasil DDL desired.
-//
-// DDL desired dijalankan di schema temporary milik session (pg_temp) di
-// dalam transaction yang selalu di-rollback, jadi database target tidak
-// berubah. Hasilnya kandidat SQL yang tetap harus ditinjau user sebelum
-// disimpan sebagai migration.
+// Diff menjalankan DDL desired di pg_temp dalam transaction yang selalu
+// di-rollback, lalu membandingkan hasilnya dengan schema saat ini.
 func (s *Store) Diff(ctx context.Context, u *domain.User, dbID int64, schema, desired string) (*SchemaDiff, error) {
 	if e := ValidateSQL(desired); e != nil {
 		return nil, e
