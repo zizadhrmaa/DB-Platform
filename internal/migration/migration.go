@@ -1,9 +1,6 @@
 // Package migration: pembuatan, review, eksekusi, dan riwayat migration
 // per database target (Owner: Orang 4).
-//
-// File ini berisi KONTRAK + aturan murni (tanpa I/O) yang sudah di-test.
-// Implementasi Service (query ke tabel migrations/migration_runs dan
-// eksekusi ke database target) dikerjakan Orang 4.
+
 package migration
 
 import (
@@ -18,20 +15,20 @@ import (
 type Status string
 
 const (
-	StatusPending   Status = "pending"   // draft: boleh diedit, belum pernah jalan
+	StatusPending   Status = "pending"   
 	StatusRunning   Status = "running"   // sedang dieksekusi
 	StatusSuccess   Status = "success"   // sudah commit -> IMMUTABLE
 	StatusFailed    Status = "failed"    // gagal & di-rollback -> boleh diedit & dijalankan ulang
 	StatusDiscarded Status = "discarded" // dibatalkan, dilewati dalam urutan, tetap tercatat
 )
 
-// Editable: SQL/judul boleh diubah.
+// SQL/judul boleh diubah.
 func (s Status) Editable() bool { return s == StatusPending || s == StatusFailed }
 
-// Executable: boleh dieksekusi (selama juga merupakan giliran berikutnya).
+// boleh dieksekusi (selama juga merupakan giliran berikutnya).
 func (s Status) Executable() bool { return s == StatusPending || s == StatusFailed }
 
-// Discardable: boleh dibatalkan.
+// boleh dibatalkan.
 func (s Status) Discardable() bool { return s == StatusPending || s == StatusFailed }
 
 // Migration adalah satu baris tabel migrations.
@@ -63,10 +60,6 @@ type Run struct {
 	ErrorMessage string
 }
 
-// NextExecutable menentukan migration mana yang BOLEH dieksekusi sekarang
-// agar riwayat tetap LINEAR: versi terkecil yang berstatus pending/failed.
-// success & discarded dilewati. Jika ada yang running -> tidak ada.
-// list boleh tidak terurut.
 func NextExecutable(list []Migration) (Migration, bool) {
 	var next *Migration
 	for i := range list {
@@ -84,10 +77,8 @@ func NextExecutable(list []Migration) (Migration, bool) {
 	return *next, true
 }
 
-// CheckExecutable mengembalikan nil jika migration id boleh dieksekusi
+// mengembalikan nil jika migration id boleh dieksekusi
 // sekarang, atau ErrConflict / ErrNotFound beserta alasannya.
-// Panggil di DALAM transaction setelah mengunci baris (FOR UPDATE) agar
-// keputusan tidak basi.
 func CheckExecutable(list []Migration, id int64) error {
 	var target *Migration
 	for i := range list {
@@ -111,33 +102,20 @@ func CheckExecutable(list []Migration, id int64) error {
 	return nil
 }
 
-// Service adalah kontrak yang diimplementasikan Orang 4.
-//
-// Semua method menerima dbID dari path DAN memastikan migration memang
-// milik dbID tersebut (WHERE id=$1 AND db_id=$2). Tanpa ini, user dengan
-// akses Edit di DB A bisa mengeksekusi migration milik DB B hanya dengan
-// mengganti ID di URL (BOLA, materi REST API Design).
-//
-// Hak akses (View vs Edit) sudah dicek authz.RequireDB di router, tetapi
-// Execute sebaiknya memanggil authz.Authorize sekali lagi tepat sebelum
-// eksekusi (akses bisa dicabut saat user sedang di halaman review).
+
 type Service interface {
 	List(ctx context.Context, dbID int64) ([]Migration, error)
 	Get(ctx context.Context, dbID, id int64) (*Migration, error)
 	Runs(ctx context.Context, dbID, id int64) ([]Run, error)
 
-	// Create: versi = max(version)+1 untuk dbID, dihitung di dalam tx
-	// yang mengunci baris db_connections (SELECT ... FOR UPDATE).
 	Create(ctx context.Context, u *domain.User, dbID int64, title, sql string) (*Migration, error)
 
-	// Update: hanya jika Status.Editable(). Gunakan
-	// "UPDATE ... WHERE id=$ AND db_id=$ AND status IN ('pending','failed')"
-	// lalu cek RowsAffected untuk mencegah race dengan Execute.
+	
 	Update(ctx context.Context, u *domain.User, dbID, id int64, title, sql string) error
 
 	Discard(ctx context.Context, u *domain.User, dbID, id int64) error
 
-	// Execute — alur yang disarankan:
+	// Execute:
 	//  1. Platform DB tx: SELECT ... FOR UPDATE semua migration dbID,
 	//     CheckExecutable, set status='running', executed_by/at, insert
 	//     migration_runs(status='running'), COMMIT.
