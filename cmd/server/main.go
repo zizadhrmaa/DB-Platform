@@ -17,6 +17,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
+	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
@@ -78,15 +79,23 @@ func run() error {
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
 	go sessions.RunCleanup(ctx, time.Hour)
 
+	az := &authz.Service{DB: db}
+	migrations := &migration.Store{DB: db, Targets: pools, Authz: az}
+	// Bereskan migration yang tertinggal running kalau server sebelumnya mati.
+	if err := migrations.Recover(ctx); err != nil {
+		slog.Warn("sebagian migration yang terputus belum bisa dibereskan", "err", err)
+	}
+
 	app := &App{
 		DB:           db,
 		View:         renderer,
 		Admin:        &admin.Store{DB: db},
 		Connections:  &admin.Connections{DB: db, Secrets: secrets},
 		Pools:        pools,
-		Authz:        &authz.Service{DB: db},
+		Authz:        az,
 		Sessions:     sessions,
 		LoginLimiter: auth.NewLoginLimiter(),
+		Migration:    &migration.Handler{Service: migrations, Authz: az, View: renderer},
 	}
 
 	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.
