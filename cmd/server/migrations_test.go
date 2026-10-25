@@ -3,9 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -254,5 +256,62 @@ UPDATE produk SET nama = '<b>x</b>' WHERE id = 8;`)
 	}
 	if rr := carol.post(v1+"/explain", url.Values{"analyze": {"on"}}); rr.Code != http.StatusForbidden {
 		t.Errorf("View Only explain: %d, want 403", rr.Code)
+	}
+}
+
+var sqlTextarea = regexp.MustCompile(`(?s)<textarea id="sql"[^>]*>(.*?)</textarea>`)
+
+func TestMigrationSchemaDiff(t *testing.T) {
+	e := newMigrationEnv(t)
+	if _, err := e.target.Exec(`CREATE TABLE produk (id INT PRIMARY KEY, nama TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	var schema string
+	if err := e.target.QueryRow(`SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	bob := loginAs(t, e.h, "bob", testutil.TestPassword)
+	carol := loginAs(t, e.h, "carol", testutil.TestPassword)
+	diff := e.base + "/diff"
+
+	page := bob.do("GET", diff+"?schema="+url.QueryEscape(schema), nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "CREATE TABLE produk") {
+		t.Fatalf("halaman schema diff: %d", page.Code)
+	}
+
+	desired := "CREATE TABLE produk (id integer, nama text NOT NULL, harga numeric(12,2) DEFAULT 0 NOT NULL, CONSTRAINT produk_pkey PRIMARY KEY (id));"
+	rr := bob.post(diff, url.Values{"schema": {schema}, "desired": {desired}})
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(body, "kolom produk.harga") {
+		t.Fatalf("hasil diff: %d", rr.Code)
+	}
+	m := sqlTextarea.FindStringSubmatch(body)
+	if m == nil || !strings.Contains(m[1], "ADD COLUMN harga") {
+		t.Fatalf("kandidat SQL tidak ditemukan di form")
+	}
+	if !e.columnExists(t, "produk", "nama") || e.columnExists(t, "produk", "harga") {
+		t.Fatal("membandingkan schema tidak boleh mengubah database")
+	}
+
+	// Kandidat SQL disimpan lewat alur migration biasa, lalu dijalankan.
+	v1 := createMigration(t, bob, e.base, "Samakan schema", html.UnescapeString(m[1]))
+	if rr := bob.post(v1+"/execute", nil); rr.Code != http.StatusSeeOther {
+		t.Fatalf("eksekusi: %d", rr.Code)
+	}
+	if !e.columnExists(t, "produk", "harga") {
+		t.Fatal("kolom harga tidak terbentuk setelah migration dijalankan")
+	}
+	if again := bob.post(diff, url.Values{"schema": {schema}, "desired": {desired}}); !strings.Contains(again.Body.String(), "Tidak ada perbedaan") {
+		t.Error("setelah migration dijalankan seharusnya tidak ada perbedaan")
+	}
+
+	if rr := bob.post(diff, url.Values{"schema": {schema}, "desired": {"CREATE TABLE " + schema + ".x (id int)"}}); rr.Code != http.StatusUnprocessableEntity {
+		t.Errorf("DDL dengan nama schema: %d, want 422", rr.Code)
+	}
+	if rr := carol.do("GET", diff, nil); rr.Code != http.StatusForbidden {
+		t.Errorf("View Only buka schema diff: %d, want 403", rr.Code)
+	}
+	if rr := carol.post(diff, url.Values{"schema": {schema}, "desired": {desired}}); rr.Code != http.StatusForbidden {
+		t.Errorf("View Only kirim schema diff: %d, want 403", rr.Code)
 	}
 }

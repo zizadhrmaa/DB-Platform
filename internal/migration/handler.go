@@ -232,3 +232,85 @@ func (h *Handler) Execute(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, fmt.Sprintf("/databases/%d/migrations/%d", dbID, id), 303)
 }
+
+// DiffPage berisi data halaman schema diff.
+type DiffPage struct {
+	DBID    int64
+	Schemas []string
+	Schema  string
+	Desired string
+	Result  *SchemaDiff
+}
+
+// DiffForm menampilkan DDL schema saat ini sebagai titik awal schema yang
+// diinginkan.
+func (h *Handler) DiffForm(w http.ResponseWriter, r *http.Request) {
+	dbID, _, e := h.ids(r)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	schemas, e := h.Service.Schemas(r.Context(), dbID)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	schema := r.URL.Query().Get("schema")
+	if schema == "" {
+		schema = defaultSchema(schemas)
+	}
+	u, _ := auth.CurrentUser(r.Context())
+	ddl, e := h.Service.CurrentSchema(r.Context(), u, dbID, schema)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	h.View.Render(w, r, http.StatusOK, "migration/diff", view.PageData{
+		Title: "Schema diff",
+		Data:  DiffPage{DBID: dbID, Schemas: schemas, Schema: schema, Desired: ddl},
+	})
+}
+
+// Diff membandingkan schema saat ini dengan schema yang diinginkan dan
+// menampilkan kandidat SQL migration yang masih bisa diubah.
+func (h *Handler) Diff(w http.ResponseWriter, r *http.Request) {
+	dbID, _, e := h.ids(r)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	if e = httpx.ParseForm(w, r, httpx.MaxSQLFormBytes); e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	schemas, e := h.Service.Schemas(r.Context(), dbID)
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	p := DiffPage{DBID: dbID, Schemas: schemas, Schema: r.PostFormValue("schema"), Desired: r.PostFormValue("desired")}
+	u, _ := auth.CurrentUser(r.Context())
+	p.Result, e = h.Service.Diff(r.Context(), u, dbID, p.Schema, p.Desired)
+	if errors.Is(e, domain.ErrInvalidInput) {
+		h.View.Render(w, r, http.StatusUnprocessableEntity, "migration/diff", view.PageData{Title: "Schema diff", Error: e.Error(), Data: p})
+		return
+	}
+	if e != nil {
+		h.fail(w, r, e)
+		return
+	}
+	h.View.Render(w, r, http.StatusOK, "migration/diff", view.PageData{Title: "Schema diff", Data: p})
+}
+
+// defaultSchema memilih public kalau ada, selain itu schema pertama.
+func defaultSchema(schemas []string) string {
+	for _, s := range schemas {
+		if s == "public" {
+			return s
+		}
+	}
+	if len(schemas) > 0 {
+		return schemas[0]
+	}
+	return "public"
+}
