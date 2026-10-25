@@ -3,7 +3,7 @@ package auth
 import "time"
 
 // SessionConfig berisi parameter session. Nilainya juga ditulis di
-// docs/KONTRAK.md, jadi kalau diubah, ubah juga di sana.
+// README.md (bagian Session), jadi kalau diubah, ubah juga di sana.
 type SessionConfig struct {
 	CookieName       string
 	IdleTimeout      time.Duration

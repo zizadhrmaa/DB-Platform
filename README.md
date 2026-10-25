@@ -4,6 +4,28 @@ Fondasi Database Management Platform: access control (login, session,
 group-based authorization), database viewer untuk PostgreSQL, dan migration
 yang terkontrol dengan riwayat linear.
 
+## Identitas kelompok
+
+Kelompok 05, Kelas 02
+
+| NIM | Nama |
+|---|---|
+| 13524017 | Aziza Dharma Putri |
+| 13524071 | Kalyca Nathania B Manullang |
+| 13524114 | Mirza Tsabita Wafa'ana |
+| 13524137 | Reysha Syafitri Mulya Ramadhan |
+
+## Pembagian tugas
+
+Disusun dari riwayat commit di branch `main`.
+
+| Anggota | Bagian | Folder utama |
+|---|---|---|
+| Aziza Dharma Putri | Kerangka proyek (domain, config, httpx, view, routes, schema platform), login, session, CSRF, pembatasan login, Docker/CI, perbaikan integrasi migration, fitur bonus analisis query dan schema diff | `internal/auth`, `internal/platformdb`, `internal/httpx`, `cmd/server`, `internal/migration/explain.go`, `internal/migration/diff.go` |
+| Kalyca Nathania B Manullang | Kelola user, group, anggota, grant akses, dan halaman admin | `internal/admin`, `cmd/server/admin.go`, `web/templates/pages/admin` |
+| Mirza Tsabita Wafa'ana | Service migration (create, edit, discard, execute, riwayat), handler, dan halaman migration | `internal/migration`, `web/templates/pages/migration` |
+| Reysha Syafitri Mulya Ramadhan | Koneksi database target, connection pool, viewer schema dan data | `internal/dbmanager`, `cmd/server/databases.go`, `cmd/server/connections.go` |
+
 ## Menjalankan
 
 Prasyarat: Go 1.24+, Docker.
@@ -56,6 +78,61 @@ pernah membuat aksesnya berkurang.
 Platform Admin bukan level akses database. Admin tetap harus masuk ke group
 yang punya grant untuk melihat isi database. Perubahan akses langsung berlaku
 di request berikutnya. Aturannya ada di `internal/authz/policy.go`.
+
+## Route
+
+Form HTML cuma bisa GET dan POST, jadi ubah dan hapus memakai POST ke
+sub-path. User tanpa akses ke database mendapat 404 supaya keberadaan
+database tidak bocor, sedangkan user View Only yang mencoba aksi Edit
+mendapat 403.
+
+| Route | Butuh |
+|---|---|
+| `GET /login`, `POST /login` | publik |
+| `POST /logout` | login |
+| `GET /databases` | login |
+| `GET /databases/{dbID}` | View |
+| `GET /databases/{dbID}/tables/{schema}/{table}` | View |
+| `GET /databases/{dbID}/tables/{schema}/{table}/data?page=&size=` | View |
+| `GET /databases/{dbID}/migrations` | View |
+| `GET .../migrations/new`, `POST .../migrations` | Edit |
+| `GET .../migrations/{migrationID}` | View |
+| `GET .../{migrationID}/edit`, `POST .../{migrationID}` | Edit |
+| `POST .../{migrationID}/execute` | Edit |
+| `POST .../{migrationID}/discard` | Edit |
+| `POST .../{migrationID}/explain` (bonus) | Edit |
+| `GET/POST /databases/{dbID}/migrations/diff` (bonus) | Edit |
+| `/admin`, `/admin/users...`, `/admin/groups...`, `/admin/databases...` | Admin |
+
+POST yang berhasil diakhiri redirect 303. Kalau validasi gagal, form
+dirender ulang dengan status 422.
+
+| Error | Status |
+|---|---|
+| Belum login | 401 (GET diarahkan ke `/login`) |
+| Akses kurang | 403 |
+| Tidak ditemukan atau tidak punya akses | 404 |
+| Input tidak valid | 400, atau 422 untuk form |
+| Konflik (misalnya urutan migration) | 409 |
+| Database target tidak bisa dihubungi | 503 |
+| Lainnya | 500 dengan pesan umum, detailnya hanya di log |
+
+## Keamanan viewer
+
+- Query viewer dijalankan di transaction `READ ONLY` dengan
+  `statement_timeout` 10 detik, lalu selalu di-rollback.
+- Nama schema dan tabel dari URL dicek dulu keberadaannya di `pg_class` dan
+  `pg_namespace` lewat parameter query, lalu di-quote dengan
+  `pgx.Identifier`. Nama dari URL tidak pernah disambung langsung ke SQL,
+  dan nama yang tidak ada (termasuk percobaan injeksi) dibalas 404.
+- Pesan error koneksi tidak ditampilkan karena bisa memuat host dan
+  username. Koneksi gagal dibalas 503, role tanpa hak SELECT dibalas 403.
+- Password koneksi disimpan terenkripsi AES-256-GCM dengan `APP_SECRET_KEY`
+  dan tidak pernah dikirim ke halaman.
+- Isi sel di-escape oleh `html/template`. NULL dibedakan dari string kosong,
+  `bytea` ditampilkan hex, dan teks panjang dipotong.
+- Pagination default 50 baris, maksimal 200, diurutkan berdasarkan primary
+  key supaya stabil.
 
 ## Fitur bonus: analisis query
 
