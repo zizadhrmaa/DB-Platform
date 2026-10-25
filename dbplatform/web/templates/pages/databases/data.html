@@ -1,0 +1,52 @@
+{{/* .Data: DB dbHeader, Page *dbmanager.DataPage */}}
+{{define "content"}}
+{{template "db-header" .Data.DB}}
+{{with .Data.Page}}
+<h1>Data {{.Schema}}.{{.Name}}</h1>
+<p>
+  <a href="/databases/{{$.Data.DB.ID}}/tables/{{pathEscape .Schema}}/{{pathEscape .Name}}">Lihat struktur</a>
+  · {{if .TotalEstimate}}Sekitar {{end}}{{.Total}} baris
+  · {{if .OrderedBy}}Diurutkan berdasarkan <code>{{.OrderedBy}}</code>{{else}}Urutan baris tidak dijamin{{end}}
+</p>
+
+{{if .Rows}}
+<div class="table-wrap">
+<table class="data">
+  <caption class="visually-hidden">Data tabel {{.Name}}, halaman {{.Page}}</caption>
+  <thead>
+    <tr>{{range .Columns}}<th scope="col">{{.}}</th>{{end}}</tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      {{range .}}
+        {{if .Null}}<td class="null">NULL</td>{{else}}<td>{{.Text}}{{if .Truncated}}<span class="muted"> ... (dipotong)</span>{{end}}</td>{{end}}
+      {{end}}
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else if gt .Page 1}}
+<p>Halaman ini kosong. <a href="?page=1&size={{.Size}}">Kembali ke halaman pertama</a>.</p>
+{{else}}
+<p>Tabel ini belum berisi data.</p>
+{{end}}
+
+<nav class="pager" aria-label="Halaman data">
+  {{if .HasPrev}}<a href="?page={{add .Page -1}}&size={{.Size}}" rel="prev">Sebelumnya</a>{{end}}
+  <span>Halaman {{.Page}} dari {{.PageCount}}</span>
+  {{if .HasNext}}<a href="?page={{add .Page 1}}&size={{.Size}}" rel="next">Berikutnya</a>{{end}}
+  <form method="get" class="row-actions">
+    <label for="size">Baris per halaman</label>
+    <select id="size" name="size">
+      <option value="20" {{if eq .Size 20}}selected{{end}}>20</option>
+      <option value="50" {{if eq .Size 50}}selected{{end}}>50</option>
+      <option value="100" {{if eq .Size 100}}selected{{end}}>100</option>
+      <option value="200" {{if eq .Size 200}}selected{{end}}>200</option>
+    </select>
+    <button type="submit">Tampilkan</button>
+  </form>
+</nav>
+{{end}}
+{{end}}

@@ -1,0 +1,21 @@
+{{/* Owner: Orang 3. Data: []authz.DBAccess */}}
+{{define "content"}}
+<h1>Pilih Database</h1>
+{{if .Data}}
+<table>
+  <caption class="visually-hidden">Database yang dapat Anda akses</caption>
+  <thead><tr><th scope="col">Nama</th><th scope="col">Akses Anda</th><th scope="col"><span class="visually-hidden">Aksi</span></th></tr></thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span class="badge badge-{{.Level.String}}">{{.Level.Label}}</span></td>
+      <td><a href="/databases/{{.DBID}}">Buka {{.Name}}</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>Anda belum memiliki akses ke database mana pun. Hubungi Platform Admin agar ditambahkan ke group yang sesuai.</p>
+{{end}}
+{{end}}
