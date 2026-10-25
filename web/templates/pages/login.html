@@ -1,0 +1,18 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Masuk</h1>
+  <form method="post" action="/login" novalidate>
+    {{template "csrf" .}}
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required
+             value="{{with .Data}}{{.Username}}{{end}}">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit">Masuk</button>
+  </form>
+</section>
+{{end}}

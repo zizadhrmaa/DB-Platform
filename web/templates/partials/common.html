@@ -1,0 +1,25 @@
+{{/* Pasang di setiap form POST. */}}
+{{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">{{end}}
+
+{{define "flash"}}
+  {{if .Flash}}<p class="alert alert-info" role="status">{{.Flash}}</p>{{end}}
+  {{if .Error}}<p class="alert alert-error" role="alert">{{.Error}}</p>{{end}}
+{{end}}
+
+{{define "nav"}}
+<nav aria-label="Navigasi utama">
+  {{if .User}}
+    <ul>
+      <li><a href="/databases">Database</a></li>
+      {{if .User.IsPlatformAdmin}}<li><a href="/admin">Admin</a></li>{{end}}
+      <li class="nav-user">Masuk sebagai <strong>{{.User.Username}}</strong></li>
+      <li>
+        <form method="post" action="/logout" class="inline">
+          {{template "csrf" .}}
+          <button type="submit" class="link-button">Keluar</button>
+        </form>
+      </li>
+    </ul>
+  {{end}}
+</nav>
+{{end}}

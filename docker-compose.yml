@@ -1,0 +1,73 @@
+# Jalankan: docker compose up -d
+#
+#   platform-db : database internal platform        -> localhost:5432
+#   target-toko : database target contoh (toko)     -> localhost:5433
+#   target-kampus: database target contoh (kampus)  -> localhost:5434
+#   test-db     : database untuk integration test  -> localhost:55432 (tmpfs, selalu bersih)
+#   app         : aplikasi (opsional: docker compose --profile app up)
+#
+# Dari dalam container app, host database target adalah nama service
+# (target-toko / target-kampus) port 5432. Dari laptop: localhost:5433/5434.
+services:
+  platform-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
+      POSTGRES_DB: dbplatform
+    ports: ["5432:5432"]
+    volumes: [platform-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d dbplatform"]
+      interval: 2s
+      retries: 30
+
+  target-toko:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: toko_owner
+      POSTGRES_PASSWORD: toko_pass
+      POSTGRES_DB: toko
+    ports: ["5433:5432"]
+    volumes:
+      - ./deploy/sample/toko.sql:/docker-entrypoint-initdb.d/01-toko.sql:ro
+      - toko-data:/var/lib/postgresql/data
+
+  target-kampus:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kampus_owner
+      POSTGRES_PASSWORD: kampus_pass
+      POSTGRES_DB: kampus
+    ports: ["5434:5432"]
+    volumes:
+      - ./deploy/sample/kampus.sql:/docker-entrypoint-initdb.d/01-kampus.sql:ro
+      - kampus-data:/var/lib/postgresql/data
+
+  test-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports: ["55432:5432"]
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      retries: 30
+
+  app:
+    profiles: ["app"]
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://platform:platform@platform-db:5432/dbplatform?sslmode=disable
+    ports: ["8080:8080"]
+    depends_on:
+      platform-db: { condition: service_healthy }
+
+volumes:
+  platform-data:
+  toko-data:
+  kampus-data:

@@ -175,6 +175,7 @@ Perilaku yang perlu diketahui:
 - Contoh akses efektif: group A punya `view` dan group B punya `edit` di database yang sama, maka user di kedua group dapat `edit`.
 - `authz.Service` tidak memakai cache. Keluar dari group, grant dicabut, atau koneksi dinonaktifkan langsung berlaku di request berikutnya.
 - Kalau admin perlu melihat data, masukkan dia ke group yang punya grant.
+<<<<<<< HEAD
 
 Halaman admin ada di `cmd/server/admin.go`, sedangkan aturan dan query-nya di `internal/admin`. Perilakunya:
 
@@ -187,6 +188,14 @@ Halaman admin ada di `cmd/server/admin.go`, sedangkan aturan dan query-nya di `i
 - Hapus user dan hapus group harus mencentang kotak konfirmasi, karena halaman tidak boleh memakai JavaScript inline.
 - Pesan sukses setelah redirect dikirim lewat `?ok=<kode>`. Yang ditampilkan hanya teks yang sudah ditentukan di kode, jadi isi query string tidak pernah dirender.
 - Menyembunyikan menu saja tidak cukup. Semua `/admin/*` dibungkus `RequireAdmin`, dan ada test yang memastikan setiap route admin menolak non-admin walaupun token CSRF-nya valid.
+=======
+- Admin aktif terakhir tidak boleh dinonaktifkan, diturunkan, atau dihapus. Cek di dalam transaction dengan `SELECT ... FOR UPDATE`, dan balas 409. Ini juga berlaku kalau admin mencoba menonaktifkan dirinya sendiri.
+- Grant yang sudah ada diperbarui dengan `INSERT ... ON CONFLICT (group_id, db_id) DO UPDATE SET level = EXCLUDED.level`.
+- Menambah anggota yang sudah ada pakai `ON CONFLICT DO NOTHING` dan cukup tampilkan info.
+- Nama group atau username yang dobel ditangkap dari error unique (`pgconn.PgError.Code == "23505"`) lalu dibalas 422 dengan pesan yang jelas.
+- ID dari form tetap divalidasi di server, karena hidden field bisa diubah dari DevTools.
+- Menyembunyikan menu saja tidak cukup. Semua `/admin/*` sudah dibungkus `RequireAdmin`.
+>>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 
 ## Koneksi dan viewer database
 

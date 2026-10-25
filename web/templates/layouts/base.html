@@ -1,0 +1,21 @@
+{{define "base"}}<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · DB Platform</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Lewati ke konten utama</a>
+  <header class="site-header">
+    <a class="brand" href="/">DB Platform</a>
+    {{template "nav" .}}
+  </header>
+  <main id="main" tabindex="-1">
+    {{template "flash" .}}
+    {{template "content" .}}
+  </main>
+  <footer class="site-footer">IF3110 · Milestone 1</footer>
+</body>
+</html>{{end}}

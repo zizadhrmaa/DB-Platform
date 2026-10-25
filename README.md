@@ -1,0 +1,53 @@
+# DB Platform IF3110 Milestone 1
+
+Fondasi Database Management Platform: access control (login, session,
+group-based authorization), database viewer untuk PostgreSQL, dan migration
+yang terkontrol dengan riwayat linear.
+
+## Menjalankan
+
+Prasyarat: Go 1.24+, Docker.
+
+```bash
+go mod tidy                 # sekali saja, mengunduh dependency & melengkapi go.sum
+cp .env.example .env        # lalu isi APP_SECRET_KEY (make keygen) dan ADMIN_PASSWORD
+make up                     # platform-db, target-toko, target-kampus, test-db
+make run                    # http://localhost:8080
+```
+
+Login pertama memakai `ADMIN_USERNAME` / `ADMIN_PASSWORD` dari `.env`
+(admin hanya dibuat jika belum ada admin sama sekali).
+
+Database target contoh untuk didaftarkan lewat halaman admin:
+
+| Nama | Host (dari laptop) | Port | Database | User | Password |
+|---|---|---|---|---|---|
+| Toko | localhost | 5433 | toko | platform_app | platform_app_pass |
+| Kampus | localhost | 5434 | kampus | platform_app | platform_app_pass |
+
+Jika aplikasi dijalankan di Docker (`docker compose --profile app up`), gunakan host
+`target-toko` / `target-kampus` port `5432`.
+
+## Testing
+
+```bash
+make test-unit          # unit test (integration otomatis di-skip)
+make test-integration   # unit + integration terhadap container test-db
+```
+
+Integration test memakai schema PostgreSQL acak per test (`internal/testutil`),
+sehingga terisolasi dan aman dijalankan paralel.
+
+## Struktur
+
+```
+cmd/server/          entry point & daftar route
+internal/auth/       authentication & session
+internal/authz/      authorization (kebijakan terpusat)
+internal/admin/      kelola user, group, grant
+internal/dbmanager/  koneksi DB target & viewer
+internal/migration/  migration & riwayat
+internal/platformdb/ schema database internal
+internal/testutil/   database khusus testing + fixture
+web/                 template Go & aset statis
+```

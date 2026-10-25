@@ -5,7 +5,10 @@ import (
 	"io/fs"
 	"net/http"
 
+<<<<<<< HEAD
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
+=======
+>>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
@@ -17,7 +20,10 @@ import (
 type App struct {
 	DB           *sql.DB
 	View         *view.Renderer
+<<<<<<< HEAD
 	Admin        *admin.Store
+=======
+>>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	Authz        authz.Authorizer
 	Sessions     auth.SessionManager
 	LoginLimiter *auth.LoginLimiter
@@ -36,7 +42,11 @@ func (app *App) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 
 	login := auth.RequireLogin
+<<<<<<< HEAD
 	adminOnly := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
+=======
+	admin := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
+>>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 	db := func(a authz.Action, h http.Handler) http.Handler { return login(authz.RequireDB(app.Authz, a, h)) }
 
 	// Authentication & Session
@@ -66,6 +76,7 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/discard", db(authz.ActionEditMigration, app.todo("batalkan migration")))
 
 	// Platform Admin (user, group, akses)
+<<<<<<< HEAD
 	mux.Handle("GET /admin", adminOnly(http.HandlerFunc(app.adminHome)))
 	mux.Handle("GET /admin/users", adminOnly(http.HandlerFunc(app.adminUsers)))
 	mux.Handle("GET /admin/users/new", adminOnly(http.HandlerFunc(app.adminNewUser)))
@@ -91,6 +102,33 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /admin/databases/{dbID}", adminOnly(app.todo("update koneksi + Invalidate pool")))
 	mux.Handle("POST /admin/databases/{dbID}/test", adminOnly(app.todo("uji koneksi")))
 	mux.Handle("POST /admin/databases/{dbID}/delete", adminOnly(app.todo("hapus/nonaktifkan koneksi")))
+=======
+	mux.Handle("GET /admin", admin(app.todo("dashboard admin")))
+	mux.Handle("GET /admin/users", admin(app.todo("daftar user")))
+	mux.Handle("GET /admin/users/new", admin(app.todo("form user baru")))
+	mux.Handle("POST /admin/users", admin(app.todo("buat user")))
+	mux.Handle("GET /admin/users/{userID}", admin(app.todo("detail/edit user")))
+	mux.Handle("POST /admin/users/{userID}", admin(app.todo("update user (aktif/admin/password)")))
+	mux.Handle("POST /admin/users/{userID}/delete", admin(app.todo("hapus user")))
+	mux.Handle("GET /admin/groups", admin(app.todo("daftar group")))
+	mux.Handle("POST /admin/groups", admin(app.todo("buat group")))
+	mux.Handle("GET /admin/groups/{groupID}", admin(app.todo("detail group: anggota & akses DB")))
+	mux.Handle("POST /admin/groups/{groupID}", admin(app.todo("update group")))
+	mux.Handle("POST /admin/groups/{groupID}/delete", admin(app.todo("hapus group")))
+	mux.Handle("POST /admin/groups/{groupID}/members", admin(app.todo("tambah anggota")))
+	mux.Handle("POST /admin/groups/{groupID}/members/{userID}/delete", admin(app.todo("keluarkan anggota")))
+	mux.Handle("POST /admin/groups/{groupID}/access", admin(app.todo("grant/ubah level akses DB")))
+	mux.Handle("POST /admin/groups/{groupID}/access/{dbID}/delete", admin(app.todo("cabut akses DB")))
+
+	// Koneksi database (oleh admin)
+	mux.Handle("GET /admin/databases", admin(app.todo("daftar koneksi DB")))
+	mux.Handle("GET /admin/databases/new", admin(app.todo("form koneksi baru")))
+	mux.Handle("POST /admin/databases", admin(app.todo("simpan koneksi (password dienkripsi)")))
+	mux.Handle("GET /admin/databases/{dbID}", admin(app.todo("edit koneksi (password tidak ditampilkan)")))
+	mux.Handle("POST /admin/databases/{dbID}", admin(app.todo("update koneksi + Invalidate pool")))
+	mux.Handle("POST /admin/databases/{dbID}/test", admin(app.todo("uji koneksi")))
+	mux.Handle("POST /admin/databases/{dbID}/delete", admin(app.todo("hapus/nonaktifkan koneksi")))
+>>>>>>> 06b0836237af9f29768cd684bcea3083116a34fc
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorRenderer(w, r, http.StatusNotFound, httpx.PublicMessage(http.StatusNotFound))
