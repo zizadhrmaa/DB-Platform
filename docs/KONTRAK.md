@@ -121,6 +121,7 @@ Form HTML cuma bisa GET dan POST, jadi ubah dan hapus memakai POST ke sub-path. 
 | `POST .../{migrationID}/execute` | Edit |
 | `POST .../{migrationID}/discard` | Edit |
 | `POST .../{migrationID}/explain` (bonus) | Edit |
+| `GET/POST /databases/{dbID}/migrations/diff` (bonus) | Edit |
 | `/admin`, `/admin/users...`, `/admin/groups...`, `/admin/databases...` | Admin |
 
 POST yang berhasil diakhiri redirect 303, supaya refresh tidak mengirim form lagi. Kalau validasi gagal, render ulang form dengan status 422 dan pesan di `PageData.Error`.

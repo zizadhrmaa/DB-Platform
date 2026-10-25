@@ -72,6 +72,34 @@ supaya statement berikutnya bisa memakai hasilnya. Satu-satunya efek yang
 tidak ikut kembali adalah nilai sequence yang sudah terpakai saat ANALYZE.
 Implementasinya ada di `internal/migration/explain.go`.
 
+## Fitur bonus: schema diff
+
+Dari halaman riwayat migration, user dengan akses View + Edit bisa membuka
+**Buat dari schema diff**. Halaman ini berisi DDL schema saat ini yang dibuat
+otomatis dari database target. User mengubahnya menjadi schema yang
+diinginkan, lalu menekan **Bandingkan**. Platform menampilkan daftar
+perbedaan (tabel, kolom, constraint, index) dan kandidat SQL migration yang
+masih bisa diedit, lalu disimpan lewat alur migration biasa, termasuk review
+sebelum dijalankan.
+
+DDL yang diinginkan dijalankan sebagai tabel temporary di dalam transaction
+yang selalu di-rollback, jadi database target tidak berubah dan role target
+tidak butuh hak CREATE di level database. Perubahan yang menghapus data
+(DROP TABLE, DROP COLUMN) diberi tanda dan komentar peringatan di SQL-nya.
+
+Batasannya:
+
+- Yang dibandingkan hanya tabel biasa beserta kolom, constraint, dan index.
+  View, function, trigger, tipe custom (enum), dan tabel partisi tidak ikut.
+- Rename terbaca sebagai hapus lalu tambah. Ganti SQL-nya dengan
+  `ALTER TABLE ... RENAME` kalau maksudnya rename.
+- Foreign key ke tabel di schema lain tidak dibandingkan dan tidak pernah
+  diubah (ditulis sebagai komentar di DDL).
+- Perubahan kolom serial atau generated column ditulis sebagai komentar
+  supaya dikerjakan manual.
+
+Implementasinya ada di `internal/migration/diff.go`.
+
 ## Testing
 
 ```bash
