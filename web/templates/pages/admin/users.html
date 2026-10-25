@@ -1,0 +1,33 @@
+{{/* .Data: []admin.User */}}
+{{define "content"}}
+{{template "admin-nav"}}
+<div class="page-head">
+  <h1>User</h1>
+  <a class="button" href="/admin/users/new">Tambah user</a>
+</div>
+<div class="table-wrap">
+<table>
+  <caption class="visually-hidden">Daftar user</caption>
+  <thead>
+    <tr>
+      <th scope="col">Username</th>
+      <th scope="col">Peran</th>
+      <th scope="col">Status</th>
+      <th scope="col">Group</th>
+      <th scope="col">Dibuat</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td><a href="/admin/users/{{.ID}}">{{.Username}}</a></td>
+      <td>{{if .IsPlatformAdmin}}Platform Admin{{else}}User{{end}}</td>
+      <td>{{if .IsActive}}Aktif{{else}}<span class="muted">Nonaktif</span>{{end}}</td>
+      <td>{{.GroupCount}}</td>
+      <td>{{fmtTime .CreatedAt}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

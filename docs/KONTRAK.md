@@ -175,12 +175,18 @@ Perilaku yang perlu diketahui:
 - Contoh akses efektif: group A punya `view` dan group B punya `edit` di database yang sama, maka user di kedua group dapat `edit`.
 - `authz.Service` tidak memakai cache. Keluar dari group, grant dicabut, atau koneksi dinonaktifkan langsung berlaku di request berikutnya.
 - Kalau admin perlu melihat data, masukkan dia ke group yang punya grant.
-- Admin aktif terakhir tidak boleh dinonaktifkan, diturunkan, atau dihapus. Cek di dalam transaction dengan `SELECT ... FOR UPDATE`, dan balas 409. Ini juga berlaku kalau admin mencoba menonaktifkan dirinya sendiri.
-- Grant yang sudah ada diperbarui dengan `INSERT ... ON CONFLICT (group_id, db_id) DO UPDATE SET level = EXCLUDED.level`.
-- Menambah anggota yang sudah ada pakai `ON CONFLICT DO NOTHING` dan cukup tampilkan info.
-- Nama group atau username yang dobel ditangkap dari error unique (`pgconn.PgError.Code == "23505"`) lalu dibalas 422 dengan pesan yang jelas.
-- ID dari form tetap divalidasi di server, karena hidden field bisa diubah dari DevTools.
-- Menyembunyikan menu saja tidak cukup. Semua `/admin/*` sudah dibungkus `RequireAdmin`.
+
+Halaman admin ada di `cmd/server/admin.go`, sedangkan aturan dan query-nya di `internal/admin`. Perilakunya:
+
+- Admin aktif terakhir tidak bisa dinonaktifkan, diturunkan, atau dihapus. Admin juga tidak bisa melakukan ketiganya ke akunnya sendiri. Pengecekannya di dalam transaction yang mengunci semua baris admin aktif (`SELECT ... FOR UPDATE`), jadi dua admin yang saling menurunkan di waktu bersamaan tidak bisa membuat platform kehilangan admin. Pelanggaran dibalas 409 dengan pesan yang menjelaskan alasannya.
+- User dinonaktifkan atau password-nya direset: semua session-nya langsung dicabut (`RevokeAllForUser`). User yang dihapus ikut kehilangan session karena `ON DELETE CASCADE`. Riwayat migration buatannya tetap ada.
+- Username mengikuti format `^[A-Za-z0-9_.-]{3,64}$` dan password 8 sampai 256 karakter. Username dan nama group yang dobel (tanpa membedakan huruf besar/kecil) dibalas 422 dengan pesan yang jelas.
+- Grant yang sudah ada diperbarui levelnya (`ON CONFLICT ... DO UPDATE`). Mencabut akses menghapus barisnya.
+- Menambah anggota yang sudah ada tidak dianggap error, cukup tampil info.
+- ID dari form tetap divalidasi di server. ID yang bukan angka dibalas 422, dan ID yang tidak ada dibalas 404.
+- Hapus user dan hapus group harus mencentang kotak konfirmasi, karena halaman tidak boleh memakai JavaScript inline.
+- Pesan sukses setelah redirect dikirim lewat `?ok=<kode>`. Yang ditampilkan hanya teks yang sudah ditentukan di kode, jadi isi query string tidak pernah dirender.
+- Menyembunyikan menu saja tidak cukup. Semua `/admin/*` dibungkus `RequireAdmin`, dan ada test yang memastikan setiap route admin menolak non-admin walaupun token CSRF-nya valid.
 
 ## Koneksi dan viewer database
 

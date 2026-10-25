@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) http.Handler {
 
 var (
 	viewer = &domain.User{ID: 1, Username: "viewer", IsActive: true}
-	admin  = &domain.User{ID: 2, Username: "root", IsActive: true, IsPlatformAdmin: true}
+	root   = &domain.User{ID: 2, Username: "root", IsActive: true, IsPlatformAdmin: true}
 )
 
 func do(h http.Handler, method, path string, u *domain.User) *httptest.ResponseRecorder {
@@ -66,9 +66,9 @@ func TestRoutesAccessControl(t *testing.T) {
 		{"view only tidak boleh form baru", "GET", "/databases/10/migrations/new", viewer, 403},
 		{"view only tidak boleh execute", "POST", "/databases/10/migrations/5/execute", viewer, 403},
 		{"DB tanpa akses -> 404", "GET", "/databases/99", viewer, 404},
-		{"admin tanpa grant -> 404", "GET", "/databases/10", admin, 404},
+		{"admin tanpa grant -> 404", "GET", "/databases/10", root, 404},
 		{"non-admin ke /admin -> 403", "GET", "/admin/users", viewer, 403},
-		{"admin ke /admin", "GET", "/admin/users", admin, 501},
+		{"admin ke /admin", "GET", "/admin/databases", root, 501},
 		{"path asing -> 404", "GET", "/tidak-ada", viewer, 404},
 		{"method tidak didukung -> 404", "DELETE", "/databases", viewer, 404},
 	}

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zizadhrmaa/DB-Platform/internal/admin"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
@@ -79,6 +80,7 @@ func run() error {
 	app := &App{
 		DB:           db,
 		View:         renderer,
+		Admin:        &admin.Store{DB: db},
 		Authz:        &authz.Service{DB: db},
 		Sessions:     sessions,
 		LoginLimiter: auth.NewLoginLimiter(),

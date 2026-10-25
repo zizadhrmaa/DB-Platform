@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 
+	"github.com/zizadhrmaa/DB-Platform/internal/admin"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
@@ -16,6 +17,7 @@ import (
 type App struct {
 	DB           *sql.DB
 	View         *view.Renderer
+	Admin        *admin.Store
 	Authz        authz.Authorizer
 	Sessions     auth.SessionManager
 	LoginLimiter *auth.LoginLimiter
@@ -34,7 +36,7 @@ func (app *App) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 
 	login := auth.RequireLogin
-	admin := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
+	adminOnly := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
 	db := func(a authz.Action, h http.Handler) http.Handler { return login(authz.RequireDB(app.Authz, a, h)) }
 
 	// Authentication & Session
@@ -64,31 +66,31 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/discard", db(authz.ActionEditMigration, app.todo("batalkan migration")))
 
 	// Platform Admin (user, group, akses)
-	mux.Handle("GET /admin", admin(app.todo("dashboard admin")))
-	mux.Handle("GET /admin/users", admin(app.todo("daftar user")))
-	mux.Handle("GET /admin/users/new", admin(app.todo("form user baru")))
-	mux.Handle("POST /admin/users", admin(app.todo("buat user")))
-	mux.Handle("GET /admin/users/{userID}", admin(app.todo("detail/edit user")))
-	mux.Handle("POST /admin/users/{userID}", admin(app.todo("update user (aktif/admin/password)")))
-	mux.Handle("POST /admin/users/{userID}/delete", admin(app.todo("hapus user")))
-	mux.Handle("GET /admin/groups", admin(app.todo("daftar group")))
-	mux.Handle("POST /admin/groups", admin(app.todo("buat group")))
-	mux.Handle("GET /admin/groups/{groupID}", admin(app.todo("detail group: anggota & akses DB")))
-	mux.Handle("POST /admin/groups/{groupID}", admin(app.todo("update group")))
-	mux.Handle("POST /admin/groups/{groupID}/delete", admin(app.todo("hapus group")))
-	mux.Handle("POST /admin/groups/{groupID}/members", admin(app.todo("tambah anggota")))
-	mux.Handle("POST /admin/groups/{groupID}/members/{userID}/delete", admin(app.todo("keluarkan anggota")))
-	mux.Handle("POST /admin/groups/{groupID}/access", admin(app.todo("grant/ubah level akses DB")))
-	mux.Handle("POST /admin/groups/{groupID}/access/{dbID}/delete", admin(app.todo("cabut akses DB")))
+	mux.Handle("GET /admin", adminOnly(http.HandlerFunc(app.adminHome)))
+	mux.Handle("GET /admin/users", adminOnly(http.HandlerFunc(app.adminUsers)))
+	mux.Handle("GET /admin/users/new", adminOnly(http.HandlerFunc(app.adminNewUser)))
+	mux.Handle("POST /admin/users", adminOnly(http.HandlerFunc(app.adminCreateUser)))
+	mux.Handle("GET /admin/users/{userID}", adminOnly(http.HandlerFunc(app.adminUser)))
+	mux.Handle("POST /admin/users/{userID}", adminOnly(http.HandlerFunc(app.adminUpdateUser)))
+	mux.Handle("POST /admin/users/{userID}/delete", adminOnly(http.HandlerFunc(app.adminDeleteUser)))
+	mux.Handle("GET /admin/groups", adminOnly(http.HandlerFunc(app.adminGroups)))
+	mux.Handle("POST /admin/groups", adminOnly(http.HandlerFunc(app.adminCreateGroup)))
+	mux.Handle("GET /admin/groups/{groupID}", adminOnly(http.HandlerFunc(app.adminGroup)))
+	mux.Handle("POST /admin/groups/{groupID}", adminOnly(app.groupAction(app.adminUpdateGroup)))
+	mux.Handle("POST /admin/groups/{groupID}/delete", adminOnly(app.groupAction(app.adminDeleteGroup)))
+	mux.Handle("POST /admin/groups/{groupID}/members", adminOnly(app.groupAction(app.adminAddMember)))
+	mux.Handle("POST /admin/groups/{groupID}/members/{userID}/delete", adminOnly(app.groupAction(app.adminRemoveMember)))
+	mux.Handle("POST /admin/groups/{groupID}/access", adminOnly(app.groupAction(app.adminGrant)))
+	mux.Handle("POST /admin/groups/{groupID}/access/{dbID}/delete", adminOnly(app.groupAction(app.adminRevoke)))
 
 	// Koneksi database (oleh admin)
-	mux.Handle("GET /admin/databases", admin(app.todo("daftar koneksi DB")))
-	mux.Handle("GET /admin/databases/new", admin(app.todo("form koneksi baru")))
-	mux.Handle("POST /admin/databases", admin(app.todo("simpan koneksi (password dienkripsi)")))
-	mux.Handle("GET /admin/databases/{dbID}", admin(app.todo("edit koneksi (password tidak ditampilkan)")))
-	mux.Handle("POST /admin/databases/{dbID}", admin(app.todo("update koneksi + Invalidate pool")))
-	mux.Handle("POST /admin/databases/{dbID}/test", admin(app.todo("uji koneksi")))
-	mux.Handle("POST /admin/databases/{dbID}/delete", admin(app.todo("hapus/nonaktifkan koneksi")))
+	mux.Handle("GET /admin/databases", adminOnly(app.todo("daftar koneksi DB")))
+	mux.Handle("GET /admin/databases/new", adminOnly(app.todo("form koneksi baru")))
+	mux.Handle("POST /admin/databases", adminOnly(app.todo("simpan koneksi (password dienkripsi)")))
+	mux.Handle("GET /admin/databases/{dbID}", adminOnly(app.todo("edit koneksi (password tidak ditampilkan)")))
+	mux.Handle("POST /admin/databases/{dbID}", adminOnly(app.todo("update koneksi + Invalidate pool")))
+	mux.Handle("POST /admin/databases/{dbID}/test", adminOnly(app.todo("uji koneksi")))
+	mux.Handle("POST /admin/databases/{dbID}/delete", adminOnly(app.todo("hapus/nonaktifkan koneksi")))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		httpx.ErrorRenderer(w, r, http.StatusNotFound, httpx.PublicMessage(http.StatusNotFound))

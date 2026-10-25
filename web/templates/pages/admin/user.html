@@ -1,0 +1,67 @@
+{{/* .Data: userPage */}}
+{{define "content"}}
+{{template "admin-nav"}}
+{{with .Data.User}}
+<h1>{{.Username}}</h1>
+<dl class="meta">
+  <dt>Peran</dt><dd>{{if .IsPlatformAdmin}}Platform Admin{{else}}User{{end}}</dd>
+  <dt>Status</dt><dd>{{if .IsActive}}Aktif{{else}}Nonaktif{{end}}</dd>
+  <dt>Dibuat</dt><dd>{{fmtTime .CreatedAt}}</dd>
+  <dt>Group</dt>
+  <dd>
+    {{range $i, $g := .Groups}}{{if $i}}, {{end}}<a href="/admin/groups/{{$g.ID}}">{{$g.Name}}</a>{{else}}Belum masuk group mana pun{{end}}
+  </dd>
+</dl>
+
+<div class="sections">
+  <section class="card">
+    <h2>Status dan peran</h2>
+    {{if $.Data.IsSelf}}<p class="hint">Ini akun Anda sendiri. Anda tidak bisa menonaktifkan atau menurunkan peran akun ini.</p>{{end}}
+    <form method="post" action="/admin/users/{{.ID}}">
+      {{template "csrf" $}}
+      <input type="hidden" name="aksi" value="status">
+      <div class="check">
+        <input id="is_active" name="is_active" type="checkbox" {{if .IsActive}}checked{{end}}>
+        <label for="is_active">Aktif</label>
+      </div>
+      <div class="check">
+        <input id="is_admin" name="is_admin" type="checkbox" {{if .IsPlatformAdmin}}checked{{end}}>
+        <label for="is_admin">Platform Admin</label>
+      </div>
+      <p class="hint">User yang dinonaktifkan langsung keluar dari semua session-nya.</p>
+      <button type="submit">Simpan</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Ganti password</h2>
+    <form method="post" action="/admin/users/{{.ID}}" novalidate>
+      {{template "csrf" $}}
+      <input type="hidden" name="aksi" value="password">
+      <div class="field">
+        <label for="password">Password baru</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" required
+               aria-describedby="password-hint">
+        <p id="password-hint" class="hint">Minimal 8 karakter. Semua session user ini akan dicabut.</p>
+      </div>
+      <button type="submit">Ganti password</button>
+    </form>
+  </section>
+
+  {{if not $.Data.IsSelf}}
+  <section class="card">
+    <h2>Hapus user</h2>
+    <form method="post" action="/admin/users/{{.ID}}/delete">
+      {{template "csrf" $}}
+      <div class="check">
+        <input id="confirm-delete" name="confirm" type="checkbox" required>
+        <label for="confirm-delete">Saya yakin ingin menghapus {{.Username}}</label>
+      </div>
+      <p class="hint">Riwayat migration yang dibuat user ini tetap disimpan.</p>
+      <button type="submit" class="danger">Hapus user</button>
+    </form>
+  </section>
+  {{end}}
+</div>
+{{end}}
+{{end}}
