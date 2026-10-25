@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Riwayat Migration</h1>
 <p><a href="/databases/{{.Data.DBID}}">Kembali ke database</a></p>
-{{if .Data.CanEdit}}<p><a href="/databases/{{.Data.DBID}}/migrations/new">Buat migration baru</a></p>{{end}}
+{{if .Data.CanEdit}}<p><a href="/databases/{{.Data.DBID}}/migrations/new">Buat migration baru</a> · <a href="/databases/{{.Data.DBID}}/migrations/diff">Buat dari schema diff</a></p>{{end}}
 <table><thead><tr><th>Versi</th><th>Judul</th><th>Status</th><th>Pembuat</th><th>Pelaksana</th><th>Waktu eksekusi</th><th>Aksi</th></tr></thead><tbody>
 {{range .Data.Items}}<tr><td>{{.Version}}</td><td>{{.Title}}</td><td>{{.Status}}</td><td>{{.CreatedBy}}</td><td>{{or .ExecutedBy "-"}}</td><td>{{fmtTime .ExecutedAt}}</td><td><a href="/databases/{{$.Data.DBID}}/migrations/{{.ID}}">Detail</a></td></tr>{{else}}<tr><td colspan="7">Belum ada migration.</td></tr>{{end}}
 </tbody></table>

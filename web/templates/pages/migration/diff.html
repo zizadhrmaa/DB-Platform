@@ -1,0 +1,68 @@
+{{/* .Data: migration.DiffPage */}}
+{{define "content"}}
+<h1>Schema diff</h1>
+<p><a href="/databases/{{.Data.DBID}}/migrations">Kembali ke riwayat</a></p>
+<p>Ubah DDL di bawah menjadi schema yang diinginkan, lalu tekan <strong>Bandingkan</strong>. Platform menjalankan DDL ini di schema sementara yang langsung dibatalkan, jadi database tidak berubah.</p>
+
+{{if gt (len .Data.Schemas) 1}}
+<form method="get" action="/databases/{{.Data.DBID}}/migrations/diff" class="row-actions">
+  <label for="schema-pick">Schema</label>
+  <select id="schema-pick" name="schema">
+    {{range .Data.Schemas}}<option value="{{.}}" {{if eq . $.Data.Schema}}selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  <button type="submit">Muat DDL schema ini</button>
+</form>
+{{end}}
+
+<form method="post" action="/databases/{{.Data.DBID}}/migrations/diff">
+  {{template "csrf" .}}
+  <input type="hidden" name="schema" value="{{.Data.Schema}}">
+  <div class="field">
+    <label for="desired">Schema yang diinginkan untuk <code>{{.Data.Schema}}</code></label>
+    <textarea id="desired" name="desired" class="sql" spellcheck="false" aria-describedby="desired-hint">{{.Data.Desired}}</textarea>
+    <p id="desired-hint" class="hint">Tulis nama tabel tanpa nama schema. Yang dibandingkan adalah tabel, kolom, constraint, dan index. View, function, trigger, tipe custom, dan tabel partisi tidak ikut.</p>
+  </div>
+  <button type="submit">Bandingkan</button>
+</form>
+
+{{with .Data.Result}}
+<section>
+  <h2>Perbedaan</h2>
+  {{if .Changes}}
+  <div class="table-wrap">
+  <table>
+    <caption class="visually-hidden">Perbedaan schema {{.Schema}}</caption>
+    <thead><tr><th scope="col">Aksi</th><th scope="col">Objek</th><th scope="col">Detail</th></tr></thead>
+    <tbody>
+    {{range .Changes}}
+      <tr>
+        <td>{{.Action}}{{if .Destructive}} <span class="badge">menghapus data</span>{{end}}</td>
+        <td>{{.Object}}</td>
+        <td><code>{{.Detail}}</code></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="hint">Rename tabel atau kolom terbaca sebagai hapus lalu tambah. Kalau maksudnya rename, ganti SQL-nya dengan ALTER TABLE ... RENAME supaya datanya tidak hilang.</p>
+
+  <h2>Kandidat SQL migration</h2>
+  <form method="post" action="/databases/{{$.Data.DBID}}/migrations">
+    {{template "csrf" $}}
+    <div class="field">
+      <label for="title">Judul migration</label>
+      <input id="title" name="title" maxlength="255" required value="Samakan schema {{.Schema}}">
+    </div>
+    <div class="field">
+      <label for="sql">SQL</label>
+      <textarea id="sql" name="sql" class="sql" spellcheck="false" required aria-describedby="sql-hint">{{.SQL}}</textarea>
+      <p id="sql-hint" class="hint">Periksa dan ubah SQL ini dulu. Setelah disimpan, migration tetap melewati halaman review sebelum dijalankan.</p>
+    </div>
+    <button type="submit">Simpan sebagai migration</button>
+  </form>
+  {{else}}
+  <p>Tidak ada perbedaan. Schema saat ini sudah sama dengan yang diinginkan.</p>
+  {{end}}
+</section>
+{{end}}
+{{end}}

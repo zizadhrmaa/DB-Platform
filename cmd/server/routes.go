@@ -64,6 +64,8 @@ func (app *App) routes() http.Handler {
 	mux.Handle("GET /databases/{dbID}/migrations", db(authz.ActionViewMigrations, http.HandlerFunc(app.Migration.List)))
 	mux.Handle("GET /databases/{dbID}/migrations/new", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.New)))
 	mux.Handle("POST /databases/{dbID}/migrations", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.Create)))
+	mux.Handle("GET /databases/{dbID}/migrations/diff", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.DiffForm)))
+	mux.Handle("POST /databases/{dbID}/migrations/diff", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.Diff)))
 	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}", db(authz.ActionViewMigrations, http.HandlerFunc(app.Migration.Detail)))
 	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}/edit", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Edit)))
 	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Update)))
