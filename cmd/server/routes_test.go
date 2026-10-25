@@ -60,7 +60,7 @@ func TestRoutesAccessControl(t *testing.T) {
 		{"tanpa login diarahkan ke /login", "GET", "/databases", nil, 303},
 		{"POST tanpa login 401", "POST", "/databases/10/migrations", nil, 401},
 		{"daftar DB", "GET", "/databases", viewer, 200},
-		{"view only boleh lihat schema", "GET", "/databases/10", viewer, 501},
+		{"view only boleh lihat detail migration", "GET", "/databases/10/migrations/5", viewer, 501},
 		{"view only boleh query console", "POST", "/databases/10/query", viewer, 501},
 		{"view only boleh lihat riwayat", "GET", "/databases/10/migrations", viewer, 501},
 		{"view only tidak boleh form baru", "GET", "/databases/10/migrations/new", viewer, 403},
@@ -68,7 +68,7 @@ func TestRoutesAccessControl(t *testing.T) {
 		{"DB tanpa akses -> 404", "GET", "/databases/99", viewer, 404},
 		{"admin tanpa grant -> 404", "GET", "/databases/10", root, 404},
 		{"non-admin ke /admin -> 403", "GET", "/admin/users", viewer, 403},
-		{"admin ke /admin", "GET", "/admin/databases", root, 501},
+		{"admin boleh buka form koneksi", "GET", "/admin/databases/new", root, 200},
 		{"path asing -> 404", "GET", "/tidak-ada", viewer, 404},
 		{"method tidak didukung -> 404", "DELETE", "/databases", viewer, 404},
 	}

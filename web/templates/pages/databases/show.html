@@ -1,0 +1,33 @@
+{{/* .Data: DB dbHeader, Schemas []schemaGroup */}}
+{{define "content"}}
+{{template "db-header" .Data.DB}}
+<h1>{{.Data.DB.Name}}</h1>
+{{range .Data.Schemas}}
+<section>
+  <h2>Schema {{.Schema}}</h2>
+  <div class="table-wrap">
+  <table>
+    <caption class="visually-hidden">Tabel di schema {{.Schema}}</caption>
+    <thead>
+      <tr>
+        <th scope="col">Nama</th>
+        <th scope="col">Jenis</th>
+        <th scope="col"><span class="visually-hidden">Aksi</span></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Tables}}
+      <tr>
+        <td><a href="/databases/{{$.Data.DB.ID}}/tables/{{pathEscape .Schema}}/{{pathEscape .Name}}">{{.Name}}</a></td>
+        <td>{{.Kind}}</td>
+        <td><a href="/databases/{{$.Data.DB.ID}}/tables/{{pathEscape .Schema}}/{{pathEscape .Name}}/data">Lihat data<span class="visually-hidden"> {{.Name}}</span></a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+{{else}}
+<p>Database ini belum punya tabel yang bisa ditampilkan.</p>
+{{end}}
+{{end}}

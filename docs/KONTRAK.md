@@ -190,17 +190,21 @@ Halaman admin ada di `cmd/server/admin.go`, sedangkan aturan dan query-nya di `i
 
 ## Koneksi dan viewer database
 
+Pool ada di `internal/dbmanager/pool.go` (`PoolManager`), query viewer di `internal/dbmanager/viewer.go`, CRUD koneksi di `internal/admin/connections.go`, dan handler-nya di `cmd/server/databases.go` serta `cmd/server/connections.go`.
+
 - Pool per database disimpan di `map[int64]*sql.DB` dengan mutex. Batasnya kecil (`MaxOpenConns` 5, idle 5 menit) supaya banyak DB target tidak menghabiskan koneksi.
 - Koneksi gagal (host mati, password salah, timeout 5 detik) dibalas 503 lewat `SanitizeError`. Pool yang gagal `Ping` jangan disimpan.
 - Edit koneksi tanpa mengisi password berarti password lama dipertahankan. Field password di form edit selalu kosong.
 - Tombol "Uji koneksi" cukup menampilkan berhasil atau gagal, tanpa detail.
 - Query viewer dijalankan di `BEGIN READ ONLY` dengan `SET LOCAL statement_timeout = '10s'`.
-- Nama schema dan tabel dari URL dicek dulu keberadaannya di `information_schema.tables`, lalu di-quote dengan `pgx.Identifier{schema, table}.Sanitize()`. Jangan pernah `fmt.Sprintf`nama dari URL.
-- Metadata yang ditampilkan: tabel (termasuk view), kolom (tipe, nullable, default), constraint (PK, FK beserta tabel rujukannya, UNIQUE, CHECK lewat `pg_get_constraintdef`), dan index (`pg_indexes.indexdef`). Schema sistem seperti `pg_catalog`, `information_schema`, dan `pg_toast` disembunyikan.
+- Nama schema dan tabel dari URL dicek dulu keberadaannya di `pg_class`/`pg_namespace` lewat parameter query, lalu di-quote dengan `pgx.Identifier{schema, table}.Sanitize()`. Nama dari URL tidak pernah disambung langsung ke SQL. Nama yang tidak ada, termasuk percobaan injeksi, dibalas 404.
+- Metadata yang ditampilkan: tabel (termasuk view), kolom (tipe, nullable, default), constraint (PK, FK beserta tabel rujukannya, UNIQUE, CHECK lewat `pg_get_constraintdef`), dan index (`pg_get_indexdef`). Schema sistem seperti `pg_catalog`, `information_schema`, dan `pg_toast` disembunyikan.
 - Pagination: default 50 baris, maksimal 200. `page` yang tidak valid dianggap 1. Urutkan berdasarkan PK supaya hasilnya stabil, atau `ctid`kalau tidak ada PK. Total baris pakai `count(*)`, atau `reltuples` untuk tabel besar.
 - Tampilan sel: NULL dibedakan dari string kosong, `bytea` ditampilkan hex dan dipotong, teks panjang dipotong sekitar 200 karakter. Data contoh sengaja berisi `<script>` untuk memastikan escaping jalan.
 - Nama tabel yang aneh seperti `"Audit Log"` harus tetap bisa dibuka, jadi segmen path-nya di-escape.
-- Tabel kosong, schema tanpa tabel, atau tidak punya hak SELECT: tampilkan pesan, jangan 500.
+- Tabel kosong, schema tanpa tabel, atau tidak punya hak SELECT: tampilkan pesan, jangan 500. Role tanpa hak SELECT dibalas 403, query yang melewati batas waktu dibalas 503.
+- Hapus koneksi ikut menghapus grant dan riwayat migration database itu. Untuk menutup akses sementara, cukup nonaktifkan koneksinya. Setiap edit, nonaktifkan, atau hapus langsung membuang pool lama (`Invalidate`).
+- Password koneksi tidak pernah dikirim ke halaman, termasuk saat form gagal divalidasi.
 
 ## Query console read-only (opsional)
 

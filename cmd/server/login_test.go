@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
+	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/testutil"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
@@ -66,10 +68,20 @@ func newHandler(t *testing.T, db *sql.DB) http.Handler {
 	}
 	httpx.ErrorRenderer = r.ErrorPage
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(false))
+	key := make([]byte, 32)
+	rand.Read(key)
+	secrets, err := dbmanager.NewSecretBox(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pools := dbmanager.NewPoolManager(db, secrets)
+	t.Cleanup(func() { pools.Close() })
 	app := &App{
 		DB:           db,
 		View:         r,
 		Admin:        &admin.Store{DB: db},
+		Connections:  &admin.Connections{DB: db, Secrets: secrets},
+		Pools:        pools,
 		Authz:        &authz.Service{DB: db},
 		Sessions:     sessions,
 		LoginLimiter: auth.NewLoginLimiter(),

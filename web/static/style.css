@@ -81,6 +81,11 @@ a.button { display: inline-block; padding: .5rem 1rem; border-radius: var(--radi
 .plain-list { list-style: none; padding: 0; }
 .plain-list li { padding: .25rem 0; }
 
+.breadcrumb { font-size: .875rem; margin-bottom: .5rem; }
+.db-access { color: var(--muted); margin-top: 0; }
+table.data td { white-space: pre-wrap; word-break: break-word; }
+.pager { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-top: 1rem; }
+
 @media (min-width: 768px) {
   .summary { grid-template-columns: repeat(3, 1fr); }
   main { padding: 0 2rem; }

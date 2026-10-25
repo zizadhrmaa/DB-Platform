@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -46,6 +47,9 @@ var funcs = template.FuncMap{
 		return "-"
 	},
 	"add": func(a, b int) int { return a + b },
+	// pathEscape dipakai untuk nama schema/tabel di URL, karena html/template
+	// tidak meng-escape "/" atau "?" di bagian path.
+	"pathEscape": url.PathEscape,
 }
 
 func New(fsys fs.FS) (*Renderer, error) {

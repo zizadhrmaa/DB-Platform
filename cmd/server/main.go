@@ -17,7 +17,6 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
-	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
@@ -53,7 +52,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	_ = secrets // TODO: oper ke PoolManager & handler koneksi admin.
+	pools := dbmanager.NewPoolManager(db, secrets)
+	defer pools.Close()
 
 	if cfg.AdminPassword != "" {
 		hash, err := auth.HashPassword(cfg.AdminPassword)
@@ -78,27 +78,15 @@ func run() error {
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
 	go sessions.RunCleanup(ctx, time.Hour)
 
-	migrationAuthz := &authz.Service{DB: db}
-
-	migrationStore := &migration.Store{
-		DB:    db,
-		Authz: migrationAuthz,
-	}
-
-	migrationHandler := &migration.Handler{
-		Service: migrationStore,
-		View:    renderer,
-		Authz:   migrationAuthz,
-	}
-
 	app := &App{
 		DB:           db,
 		View:         renderer,
 		Admin:        &admin.Store{DB: db},
+		Connections:  &admin.Connections{DB: db, Secrets: secrets},
+		Pools:        pools,
 		Authz:        &authz.Service{DB: db},
 		Sessions:     sessions,
 		LoginLimiter: auth.NewLoginLimiter(),
-		Migration:    migrationHandler,
 	}
 
 	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.

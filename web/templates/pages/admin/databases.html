@@ -1,0 +1,38 @@
+{{/* .Data: []dbmanager.ConnectionInfo */}}
+{{define "content"}}
+{{template "admin-nav"}}
+<div class="page-head">
+  <h1>Koneksi database</h1>
+  <a class="button" href="/admin/databases/new">Tambah koneksi</a>
+</div>
+{{if .Data}}
+<div class="table-wrap">
+<table>
+  <caption class="visually-hidden">Daftar koneksi database</caption>
+  <thead>
+    <tr>
+      <th scope="col">Nama</th>
+      <th scope="col">Host</th>
+      <th scope="col">Database</th>
+      <th scope="col">Username</th>
+      <th scope="col">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td><a href="/admin/databases/{{.ID}}">{{.Name}}</a></td>
+      <td>{{.Host}}:{{.Port}}</td>
+      <td>{{.Database}}</td>
+      <td>{{.Username}}</td>
+      <td>{{if .IsActive}}Aktif{{else}}<span class="muted">Nonaktif</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<p>Belum ada koneksi database.</p>
+{{end}}
+<p class="hint">Setelah koneksi dibuat, beri akses ke group di halaman <a href="/admin/groups">Group</a>.</p>
+{{end}}
