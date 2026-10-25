@@ -19,11 +19,6 @@ const MaxSQLBytes = 512 << 10 // 512 KiB
 //  2. Perintah yang PostgreSQL tolak di dalam transaction block
 //     (CREATE INDEX CONCURRENTLY, VACUUM, CREATE/DROP DATABASE, ALTER SYSTEM,
 //     CREATE/DROP TABLESPACE, REINDEX ... CONCURRENTLY, DROP INDEX CONCURRENTLY).
-//
-// Komentar dan string literal diabaikan dulu agar teks seperti
-// 'BEGIN' di dalam data tidak salah terdeteksi. Ini pemeriksaan ramah
-// pengguna, BUKAN batas keamanan: user Edit memang berhak menjalankan SQL
-// apa pun yang diizinkan role database target.
 func ValidateSQL(sql string) error {
 	if len(sql) > MaxSQLBytes {
 		return fmt.Errorf("%w: SQL melebihi %d KiB", domain.ErrInvalidInput, MaxSQLBytes>>10)
