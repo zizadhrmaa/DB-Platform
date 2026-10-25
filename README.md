@@ -28,6 +28,35 @@ Database target contoh untuk didaftarkan lewat halaman admin:
 Jika aplikasi dijalankan di Docker (`docker compose --profile app up`), gunakan host
 `target-toko` / `target-kampus` port `5432`.
 
+## Session
+
+| Parameter | Nilai |
+|---|---|
+| Idle timeout | 30 menit tanpa aktivitas |
+| Absolute expiration | 8 jam sejak login, tidak diperpanjang oleh rotasi |
+| Rotasi session ID | saat login, saat user dijadikan admin, dan setiap 15 menit |
+| Grace period ID lama | 30 detik setelah dirotasi |
+| Cookie | `dbp_session`, HttpOnly, SameSite=Lax, Secure di production |
+
+Session ID dibuat acak (32 byte) dan yang disimpan di database hanya hash
+SHA-256-nya. Logout mencabut session di backend, dan user yang dinonaktifkan
+atau password-nya direset langsung kehilangan semua session-nya. Setiap
+request yang mengubah data wajib membawa token CSRF. Nilainya diatur di
+`internal/auth/config.go`.
+
+## Akses efektif
+
+User hanya mendapat akses database lewat group. Kalau user berada di
+beberapa group yang punya akses ke database yang sama, **akses efektifnya
+adalah level tertinggi** di antara group tersebut. Contoh: group A View Only
+dan group B View + Edit, maka user di kedua group mendapat View + Edit.
+Tidak ada grant yang mengurangi akses, jadi menambahkan user ke group tidak
+pernah membuat aksesnya berkurang.
+
+Platform Admin bukan level akses database. Admin tetap harus masuk ke group
+yang punya grant untuk melihat isi database. Perubahan akses langsung berlaku
+di request berikutnya. Aturannya ada di `internal/authz/policy.go`.
+
 ## Testing
 
 ```bash
