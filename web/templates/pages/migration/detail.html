@@ -1,8 +1,9 @@
 {{define "content"}}
-<h1>Migration v{{.Data.Item.Version}} — {{.Data.Item.Title}}</h1>
+<h1>Migration v{{.Data.Item.Version}}: {{.Data.Item.Title}}</h1>
 <p><a href="/databases/{{.Data.DBID}}/migrations">Kembali ke riwayat</a></p>
 <p>Status: <strong>{{.Data.Item.Status}}</strong></p>
 <p>Dibuat oleh {{.Data.Item.CreatedBy}} pada {{fmtTime .Data.Item.CreatedAt}}</p>
+{{if .Data.Item.ExecutedBy}}<p>Terakhir dijalankan oleh {{.Data.Item.ExecutedBy}} pada {{fmtTime .Data.Item.ExecutedAt}}</p>{{end}}
 <h2>Review SQL</h2>
 <pre><code>{{.Data.Item.SQL}}</code></pre>
 {{if .Data.Item.ErrorMessage}}<p role="alert">Error SQL: {{.Data.Item.ErrorMessage}}</p>{{end}}

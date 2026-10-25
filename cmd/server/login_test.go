@@ -15,6 +15,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
+	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/testutil"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
@@ -61,6 +62,12 @@ var csrfInput = regexp.MustCompile(`name="csrf_token" value="([^"]*)"`)
 // newHandler merakit aplikasi lengkap di atas database test, sama seperti
 // di main.go.
 func newHandler(t *testing.T, db *sql.DB) http.Handler {
+	return newHandlerWith(t, db, nil)
+}
+
+// newHandlerWith sama dengan newHandler, tapi memakai pools yang diberikan.
+// nil berarti memakai PoolManager sungguhan.
+func newHandlerWith(t *testing.T, db *sql.DB, pools dbmanager.Manager) http.Handler {
 	t.Helper()
 	r, err := view.New(web.FS)
 	if err != nil {
@@ -74,17 +81,23 @@ func newHandler(t *testing.T, db *sql.DB) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pools := dbmanager.NewPoolManager(db, secrets)
-	t.Cleanup(func() { pools.Close() })
+	if pools == nil {
+		pm := dbmanager.NewPoolManager(db, secrets)
+		t.Cleanup(func() { pm.Close() })
+		pools = pm
+	}
+	az := &authz.Service{DB: db}
+	migrations := &migration.Store{DB: db, Targets: pools, Authz: az}
 	app := &App{
 		DB:           db,
 		View:         r,
 		Admin:        &admin.Store{DB: db},
 		Connections:  &admin.Connections{DB: db, Secrets: secrets},
 		Pools:        pools,
-		Authz:        &authz.Service{DB: db},
+		Authz:        az,
 		Sessions:     sessions,
 		LoginLimiter: auth.NewLoginLimiter(),
+		Migration:    &migration.Handler{Service: migrations, Authz: az, View: r},
 	}
 	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, sessions.Middleware, sessions.CSRFMiddleware)
 }

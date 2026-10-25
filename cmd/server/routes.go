@@ -10,6 +10,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
+	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
@@ -24,6 +25,7 @@ type App struct {
 	Authz        authz.Authorizer
 	Sessions     auth.SessionManager
 	LoginLimiter *auth.LoginLimiter
+	Migration    *migration.Handler
 }
 
 // routes mendaftarkan semua route. Ganti app.todo dengan handler asli tanpa
@@ -59,14 +61,14 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("jalankan query read-only")))
 
 	// Migration
-	mux.Handle("GET /databases/{dbID}/migrations", db(authz.ActionViewMigrations, app.todo("riwayat migration")))
-	mux.Handle("GET /databases/{dbID}/migrations/new", db(authz.ActionCreateMigration, app.todo("form migration baru")))
-	mux.Handle("POST /databases/{dbID}/migrations", db(authz.ActionCreateMigration, app.todo("simpan migration baru")))
-	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}", db(authz.ActionViewMigrations, app.todo("detail + review SQL + riwayat run")))
-	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}/edit", db(authz.ActionEditMigration, app.todo("form edit migration")))
-	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}", db(authz.ActionEditMigration, app.todo("simpan perubahan migration")))
-	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/execute", db(authz.ActionExecuteMigration, app.todo("eksekusi migration")))
-	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/discard", db(authz.ActionEditMigration, app.todo("batalkan migration")))
+	mux.Handle("GET /databases/{dbID}/migrations", db(authz.ActionViewMigrations, http.HandlerFunc(app.Migration.List)))
+	mux.Handle("GET /databases/{dbID}/migrations/new", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.New)))
+	mux.Handle("POST /databases/{dbID}/migrations", db(authz.ActionCreateMigration, http.HandlerFunc(app.Migration.Create)))
+	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}", db(authz.ActionViewMigrations, http.HandlerFunc(app.Migration.Detail)))
+	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}/edit", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Edit)))
+	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Update)))
+	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/execute", db(authz.ActionExecuteMigration, http.HandlerFunc(app.Migration.Execute)))
+	mux.Handle("POST /databases/{dbID}/migrations/{migrationID}/discard", db(authz.ActionEditMigration, http.HandlerFunc(app.Migration.Discard)))
 
 	// Platform Admin (user, group, akses)
 	mux.Handle("GET /admin", adminOnly(http.HandlerFunc(app.adminHome)))
