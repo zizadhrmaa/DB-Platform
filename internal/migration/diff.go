@@ -64,6 +64,25 @@ func (s *Store) Schemas(ctx context.Context, dbID int64) ([]string, error) {
 	if e != nil {
 		return nil, e
 	}
+	if dbmanager.IsMySQL(target) {
+		rows, e := target.QueryContext(ctx, `
+			SELECT schema_name FROM information_schema.schemata
+			WHERE schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+			ORDER BY schema_name`)
+		if e != nil {
+			return nil, dbmanager.SanitizeError(e)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var n string
+			if e = rows.Scan(&n); e != nil {
+				return nil, e
+			}
+			out = append(out, n)
+		}
+		return out, rows.Err()
+	}
 	rows, e := target.QueryContext(ctx, `
 		SELECT nspname FROM pg_namespace
 		WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\_%'

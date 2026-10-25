@@ -1,4 +1,5 @@
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
+TEST_MYSQL_DATABASE_URL ?= platform_app:platform_app_pass@tcp(localhost:3306)/kampus?parseTime=true&multiStatements=true
 
 .PHONY: up down run test test-unit test-integration vet fmt keygen
 
@@ -14,9 +15,9 @@ run:           ## jalankan server
 test-unit:     ## unit test saja
 	go test ./...
 
-test-integration: ## unit + integration test terhadap test-db
-	docker compose up -d --wait test-db
-	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -count=1 ./...
+test-integration: ## unit + integration test terhadap test-db dan target-mysql
+	docker compose up -d --wait test-db target-mysql
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TEST_MYSQL_DATABASE_URL="$(TEST_MYSQL_DATABASE_URL)" go test -count=1 ./...
 
 test: test-integration
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
@@ -211,22 +212,26 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	}
 	defer release()
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
-		return nil, e
+	isMy := dbmanager.IsMySQL(target)
+	if !isMy {
+		if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
+			return nil, e
+		}
+		if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
+			return nil, e
+		}
 	}
-	if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
-		return nil, e
-	}
-	locked, e := tryLockTarget(work, tx, dbID)
+	locked, e := tryLockTarget(work, tx, dbID, isMy)
 	if e != nil {
 		return nil, e
 	}
 	if !locked {
 		return nil, fmt.Errorf("%w: ada migration lain yang sedang dijalankan di database ini", domain.ErrConflict)
 	}
-	// Selama kunci dipegang, migration berstatus running pasti sisa eksekusi
-	// yang terputus, jadi dibereskan dulu sebelum mengecek giliran.
-	if e = s.reconcile(work, tx, dbID); e != nil {
+	if isMy {
+		defer unlockTarget(work, tx, dbID, isMy)
+	}
+	if e = s.reconcile(work, tx, dbID, isMy); e != nil {
 		return nil, e
 	}
 
@@ -236,15 +241,18 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	}
 
 	resultErr := func() error {
-		// Penanda ini ikut commit bersama SQL migration, dan ditulis sebelum
-		// SQL user supaya SET search_path di dalamnya tidak memindahkan lokasinya.
-		if _, e := tx.ExecContext(work, `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); e != nil {
+		historyTableSQL := `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`
+		insertSQL := `INSERT INTO _dbplatform_history(version) VALUES($1)`
+		if isMy {
+			historyTableSQL = `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INT PRIMARY KEY,applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`
+			insertSQL = `INSERT INTO _dbplatform_history(version) VALUES(?)`
+		}
+		if _, e := tx.ExecContext(work, historyTableSQL); e != nil {
 			return e
 		}
-		if _, e := tx.ExecContext(work, `INSERT INTO _dbplatform_history(version) VALUES($1)`, version); e != nil {
+		if _, e := tx.ExecContext(work, insertSQL, version); e != nil {
 			return e
 		}
-		// Tanpa argumen, SQL migration boleh berisi banyak statement.
 		if _, e := tx.ExecContext(work, sqlText); e != nil {
 			return e
 		}
@@ -345,6 +353,10 @@ func (s *Store) finish(work context.Context, id, dbID, runID int64, status Statu
 // errorMessage mengambil pesan error PostgreSQL. Error lain, misalnya
 // koneksi putus, diganti pesan umum supaya detail koneksi tidak tersimpan.
 func errorMessage(e error) string {
+	var me *mysql.MySQLError
+	if errors.As(e, &me) {
+		return fmt.Sprintf("MySQL Error %d: %s", me.Number, me.Message)
+	}
 	var pe *pgconn.PgError
 	if errors.As(e, &pe) {
 		msg := pe.Message

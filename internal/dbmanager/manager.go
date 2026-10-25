@@ -12,20 +12,20 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 )
 
+const (
+	DBTypePostgres = "postgres"
+	DBTypeMySQL    = "mysql"
+)
+
 type Manager interface {
-	// Conn mengembalikan pool yang di-cache per dbID. Jangan di-Close oleh pemanggil.
-	// Error-nya ErrConnNotFound, ErrConnInactive, atau
-	// ErrConnUnavailable, dan tidak boleh memuat password atau DSN.
 	Conn(ctx context.Context, dbID int64) (*sql.DB, error)
-
-	// Invalidate dipanggil setelah admin mengubah atau menghapus koneksi
-	// supaya kredensial lama tidak terus dipakai.
 	Invalidate(dbID int64)
-
 	Close() error
 }
 
@@ -35,10 +35,10 @@ var (
 	ErrConnUnavailable = fmt.Errorf("%w: database target tidak dapat dihubungi", domain.ErrUnavailable)
 )
 
-// ConnectionInfo sengaja tidak punya field password, jadi aman dikirim ke template.
 type ConnectionInfo struct {
 	ID       int64
 	Name     string
+	DBType   string
 	Host     string
 	Port     int
 	Database string
@@ -47,9 +47,29 @@ type ConnectionInfo struct {
 	IsActive bool
 }
 
-// BuildDSN memakai url.URL supaya password berisi @ : / ? tetap aman.
-// Hasilnya berisi password, jangan di-log.
 func BuildDSN(c ConnectionInfo, password string) string {
+	if c.DBType == DBTypeMySQL {
+		cfg := mysql.NewConfig()
+		cfg.User = c.Username
+		cfg.Passwd = password
+		cfg.Net = "tcp"
+		cfg.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
+		cfg.DBName = c.Database
+		cfg.Timeout = 5 * time.Second
+		cfg.MultiStatements = true
+		cfg.ParseTime = true
+		cfg.Collation = "utf8mb4_unicode_ci"
+		switch c.SSLMode {
+		case "require":
+			cfg.TLSConfig = "skip-verify"
+		case "verify-ca", "verify-full":
+			cfg.TLSConfig = "true"
+		default:
+			cfg.TLSConfig = "false"
+		}
+		return cfg.FormatDSN()
+	}
+
 	u := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(c.Username, password),
@@ -68,7 +88,6 @@ func BuildDSN(c ConnectionInfo, password string) string {
 	return u.String()
 }
 
-// SanitizeError membuang pesan asli driver karena bisa memuat kredensial.
 func SanitizeError(err error) error {
 	if err == nil {
 		return nil

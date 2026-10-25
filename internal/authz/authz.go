@@ -23,9 +23,10 @@ type Authorizer interface {
 }
 
 type DBAccess struct {
-	DBID  int64
-	Name  string
-	Level domain.AccessLevel
+	DBID   int64
+	Name   string
+	DBType string
+	Level  domain.AccessLevel
 }
 
 // Service sengaja tidak memakai cache supaya pencabutan akses langsung berlaku di request berikutnya.
@@ -83,13 +84,13 @@ func (s *Service) AccessibleDatabases(ctx context.Context, u *domain.User) ([]DB
 		return nil, domain.ErrUnauthenticated
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT d.id, d.name,
+		SELECT d.id, d.name, d.db_type,
 		       MAX(CASE a.level WHEN 'edit' THEN 2 WHEN 'view' THEN 1 END)
 		FROM group_db_access a
 		JOIN group_members  m ON m.group_id = a.group_id
 		JOIN db_connections d ON d.id = a.db_id AND d.is_active
 		WHERE m.user_id = $1
-		GROUP BY d.id, d.name
+		GROUP BY d.id, d.name, d.db_type
 		ORDER BY lower(d.name), d.id`, u.ID)
 	if err != nil {
 		return nil, err
@@ -99,7 +100,7 @@ func (s *Service) AccessibleDatabases(ctx context.Context, u *domain.User) ([]DB
 	for rows.Next() {
 		var a DBAccess
 		var lvl int
-		if err := rows.Scan(&a.DBID, &a.Name, &lvl); err != nil {
+		if err := rows.Scan(&a.DBID, &a.Name, &a.DBType, &lvl); err != nil {
 			return nil, err
 		}
 		a.Level = domain.AccessLevel(lvl)

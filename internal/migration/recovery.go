@@ -14,7 +14,15 @@ const interruptedMessage = "Eksekusi terputus sebelum selesai. Perubahan di data
 
 // tryLockTarget mengambil kunci eksekusi migration di database target.
 // Kunci lepas otomatis saat transaction selesai, termasuk kalau server mati.
-func tryLockTarget(ctx context.Context, tx *sql.Tx, dbID int64) (bool, error) {
+func tryLockTarget(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL bool) (bool, error) {
+	if isMySQL {
+		var res sql.NullInt64
+		lockName := fmt.Sprintf("dbplatform_migration_%d", dbID)
+		if e := tx.QueryRowContext(ctx, `SELECT GET_LOCK(?, 0)`, lockName).Scan(&res); e != nil {
+			return false, dbmanager.SanitizeError(e)
+		}
+		return res.Valid && res.Int64 == 1, nil
+	}
 	var locked bool
 	if e := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1::integer,$2::integer)`, 3110, dbID).Scan(&locked); e != nil {
 		return false, dbmanager.SanitizeError(e)
@@ -22,13 +30,13 @@ func tryLockTarget(ctx context.Context, tx *sql.Tx, dbID int64) (bool, error) {
 	return locked, nil
 }
 
-// Recover menyelaraskan migration yang masih running, misalnya setelah
-// server mati di tengah eksekusi.
-//
-// Jika bukti COMMIT ada di _dbplatform_history, status menjadi success.
-// Jika tidak ada, transaction di target pasti sudah di-rollback, jadi
-// status menjadi failed. Database yang sedang menjalankan migration atau
-// tidak bisa dihubungi dilewati dan dicoba lagi pada eksekusi berikutnya.
+func unlockTarget(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL bool) {
+	if isMySQL {
+		lockName := fmt.Sprintf("dbplatform_migration_%d", dbID)
+		_, _ = tx.ExecContext(ctx, `SELECT RELEASE_LOCK(?)`, lockName)
+	}
+}
+
 func (s *Store) Recover(ctx context.Context) error {
 	if s.DB == nil || s.Targets == nil {
 		return fmt.Errorf("recovery dependencies not initialized")
@@ -66,22 +74,23 @@ func (s *Store) recoverDB(ctx context.Context, dbID int64) error {
 	if e != nil {
 		return e
 	}
+	isMy := dbmanager.IsMySQL(target)
 	tx, e := target.BeginTx(ctx, nil)
 	if e != nil {
 		return dbmanager.SanitizeError(e)
 	}
 	defer tx.Rollback()
-	locked, e := tryLockTarget(ctx, tx, dbID)
+	locked, e := tryLockTarget(ctx, tx, dbID, isMy)
 	if e != nil || !locked {
 		return e
 	}
-	return s.reconcile(ctx, tx, dbID)
+	if isMy {
+		defer unlockTarget(ctx, tx, dbID, isMy)
+	}
+	return s.reconcile(ctx, tx, dbID, isMy)
 }
 
-// reconcile membereskan migration running milik dbID. Pemanggil harus
-// sedang memegang kunci tryLockTarget lewat tx, supaya tidak ada eksekusi
-// lain yang berjalan.
-func (s *Store) reconcile(ctx context.Context, tx *sql.Tx, dbID int64) error {
+func (s *Store) reconcile(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL bool) error {
 	rows, e := s.DB.QueryContext(ctx, `SELECT id,version FROM migrations WHERE db_id=$1 AND status='running'`, dbID)
 	if e != nil {
 		return e
@@ -106,13 +115,26 @@ func (s *Store) reconcile(ctx context.Context, tx *sql.Tx, dbID int64) error {
 	}
 
 	var hasHistory bool
-	if e = tx.QueryRowContext(ctx, `SELECT to_regclass('_dbplatform_history') IS NOT NULL`).Scan(&hasHistory); e != nil {
-		return dbmanager.SanitizeError(e)
+	if isMySQL {
+		var cnt int
+		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '_dbplatform_history'`).Scan(&cnt); e != nil {
+			return dbmanager.SanitizeError(e)
+		}
+		hasHistory = cnt > 0
+	} else {
+		if e = tx.QueryRowContext(ctx, `SELECT to_regclass('_dbplatform_history') IS NOT NULL`).Scan(&hasHistory); e != nil {
+			return dbmanager.SanitizeError(e)
+		}
 	}
+
 	for _, it := range items {
 		applied := false
 		if hasHistory {
-			if e = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM _dbplatform_history WHERE version=$1)`, it.version).Scan(&applied); e != nil {
+			checkSQL := `SELECT EXISTS (SELECT 1 FROM _dbplatform_history WHERE version=$1)`
+			if isMySQL {
+				checkSQL = `SELECT EXISTS (SELECT 1 FROM _dbplatform_history WHERE version=?)`
+			}
+			if e = tx.QueryRowContext(ctx, checkSQL, it.version).Scan(&applied); e != nil {
 				return dbmanager.SanitizeError(e)
 			}
 		}

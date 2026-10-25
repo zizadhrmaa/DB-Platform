@@ -66,6 +66,38 @@ func TestBuildDSNEscapesPassword(t *testing.T) {
 	}
 }
 
+func TestBuildDSNMySQL(t *testing.T) {
+	c := ConnectionInfo{
+		DBType:   DBTypeMySQL,
+		Host:     "127.0.0.1",
+		Port:     3306,
+		Database: "kampus",
+		Username: "app_user",
+		SSLMode:  "disable",
+	}
+	dsn := BuildDSN(c, "p@ss:w/rd?")
+	if !strings.Contains(dsn, "app_user:") || !strings.Contains(dsn, "@tcp(127.0.0.1:3306)/kampus") {
+		t.Fatalf("format dsn mysql salah: %s", dsn)
+	}
+	if !strings.Contains(dsn, "multiStatements=true") || !strings.Contains(dsn, "parseTime=true") {
+		t.Fatalf("parameter penting multiStatements/parseTime tidak ada: %s", dsn)
+	}
+
+	cReq := c
+	cReq.SSLMode = "require"
+	dsnReq := BuildDSN(cReq, "pass")
+	if !strings.Contains(dsnReq, "tls=skip-verify") {
+		t.Fatalf("tls require salah: %s", dsnReq)
+	}
+
+	cFull := c
+	cFull.SSLMode = "verify-full"
+	dsnFull := BuildDSN(cFull, "pass")
+	if !strings.Contains(dsnFull, "tls=true") {
+		t.Fatalf("tls verify-full salah: %s", dsnFull)
+	}
+}
+
 func TestSanitizeErrorHidesDetails(t *testing.T) {
 	raw := errors.New(`failed to connect to user=admin password=supersecret host=db`)
 	err := SanitizeError(raw)

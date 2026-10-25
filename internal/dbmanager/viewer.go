@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -122,9 +123,21 @@ func viewerError(err error) error {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
 		switch pe.Code {
-		case "42501": // insufficient_privilege
+		case "42501":
 			return fmt.Errorf("%w: role database tidak punya hak SELECT", domain.ErrForbidden)
-		case "57014": // query_canceled, termasuk statement_timeout
+		case "57014":
+			return fmt.Errorf("%w: query terlalu lama", domain.ErrUnavailable)
+		}
+		return err
+	}
+	var me *mysql.MySQLError
+	if errors.As(err, &me) {
+		switch me.Number {
+		case 1142, 1143:
+			return fmt.Errorf("%w: role database tidak punya hak SELECT", domain.ErrForbidden)
+		case 1045:
+			return ErrConnUnavailable
+		case 3024, 1317:
 			return fmt.Errorf("%w: query terlalu lama", domain.ErrUnavailable)
 		}
 		return err
@@ -133,6 +146,9 @@ func viewerError(err error) error {
 }
 
 func ListTables(ctx context.Context, db *sql.DB) ([]Table, error) {
+	if IsMySQL(db) {
+		return listTablesMySQL(ctx, db)
+	}
 	list := []Table{}
 	err := readOnly(ctx, db, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
@@ -193,6 +209,9 @@ func findTable(ctx context.Context, tx *sql.Tx, schema, name string) (uint32, Ta
 }
 
 func DescribeTable(ctx context.Context, db *sql.DB, schema, name string) (*TableDetail, error) {
+	if IsMySQL(db) {
+		return describeTableMySQL(ctx, db, schema, name)
+	}
 	d := &TableDetail{}
 	err := readOnly(ctx, db, func(tx *sql.Tx) error {
 		oid, t, err := findTable(ctx, tx, schema, name)
@@ -321,6 +340,9 @@ func ClampPage(pageStr, sizeStr string) (int, int) {
 }
 
 func TableData(ctx context.Context, db *sql.DB, schema, name string, page, size int) (*DataPage, error) {
+	if IsMySQL(db) {
+		return tableDataMySQL(ctx, db, schema, name, page, size)
+	}
 	p := &DataPage{Page: page, Size: size}
 	err := readOnly(ctx, db, func(tx *sql.Tx) error {
 		oid, t, err := findTable(ctx, tx, schema, name)
@@ -469,4 +491,256 @@ func truncate(s string) Cell {
 	}
 	r := []rune(s)
 	return Cell{Text: string(r[:maxCellRunes]), Truncated: true}
+}
+
+func readOnlyMySQL(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return SanitizeError(err)
+	}
+	defer tx.Rollback()
+	return viewerError(fn(tx))
+}
+
+func listTablesMySQL(ctx context.Context, db *sql.DB) ([]Table, error) {
+	list := []Table{}
+	err := readOnlyMySQL(ctx, db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+			FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = DATABASE()
+			ORDER BY TABLE_SCHEMA, TABLE_NAME`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var t Table
+			var rawKind string
+			if err := rows.Scan(&t.Schema, &t.Name, &rawKind); err != nil {
+				return err
+			}
+			if strings.EqualFold(rawKind, "VIEW") {
+				t.Kind = "view"
+			} else {
+				t.Kind = "tabel"
+			}
+			list = append(list, t)
+		}
+		return rows.Err()
+	})
+	return list, err
+}
+
+func describeTableMySQL(ctx context.Context, db *sql.DB, schema, name string) (*TableDetail, error) {
+	d := &TableDetail{}
+	err := readOnlyMySQL(ctx, db, func(tx *sql.Tx) error {
+		var rawKind string
+		err := tx.QueryRowContext(ctx, `
+			SELECT TABLE_TYPE
+			FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, schema, name,
+		).Scan(&rawKind)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("tabel %s.%s: %w", schema, name, domain.ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		kind := "tabel"
+		if strings.EqualFold(rawKind, "VIEW") {
+			kind = "view"
+		}
+		d.Table = Table{Schema: schema, Name: name, Kind: kind}
+
+		colRows, err := tx.QueryContext(ctx, `
+			SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COALESCE(COLUMN_DEFAULT, ''), EXTRA
+			FROM information_schema.COLUMNS
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+			ORDER BY ORDINAL_POSITION`, schema, name)
+		if err != nil {
+			return err
+		}
+		defer colRows.Close()
+		d.Columns = []Column{}
+		for colRows.Next() {
+			var c Column
+			var nullable string
+			var extra string
+			if err := colRows.Scan(&c.Name, &c.Type, &nullable, &c.Default, &extra); err != nil {
+				return err
+			}
+			c.Nullable = strings.EqualFold(nullable, "YES")
+			if extra != "" && c.Default == "" {
+				c.Default = extra
+			}
+			d.Columns = append(d.Columns, c)
+		}
+		if err := colRows.Err(); err != nil {
+			return err
+		}
+
+		conRows, err := tx.QueryContext(ctx, `
+			SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE,
+			       COALESCE(kcu.REFERENCED_TABLE_NAME, '')
+			FROM information_schema.TABLE_CONSTRAINTS tc
+			LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu
+			  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+			 AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+			 AND tc.TABLE_NAME = kcu.TABLE_NAME
+			WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ?
+			GROUP BY tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, kcu.REFERENCED_TABLE_NAME
+			ORDER BY tc.CONSTRAINT_NAME`, schema, name)
+		if err != nil {
+			return err
+		}
+		defer conRows.Close()
+		d.Constraints = []Constraint{}
+		for conRows.Next() {
+			var con Constraint
+			var conType string
+			if err := conRows.Scan(&con.Name, &conType, &con.References); err != nil {
+				return err
+			}
+			con.Type = conType
+			d.Constraints = append(d.Constraints, con)
+		}
+		if err := conRows.Err(); err != nil {
+			return err
+		}
+
+		idxRows, err := tx.QueryContext(ctx, `
+			SELECT INDEX_NAME, NON_UNIQUE
+			FROM information_schema.STATISTICS
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+			GROUP BY INDEX_NAME, NON_UNIQUE
+			ORDER BY (INDEX_NAME = 'PRIMARY') DESC, INDEX_NAME`, schema, name)
+		if err != nil {
+			return err
+		}
+		defer idxRows.Close()
+		d.Indexes = []Index{}
+		for idxRows.Next() {
+			var ix Index
+			var nonUnique int
+			if err := idxRows.Scan(&ix.Name, &nonUnique); err != nil {
+				return err
+			}
+			ix.Unique = (nonUnique == 0)
+			ix.Primary = (ix.Name == "PRIMARY")
+			ix.Definition = "INDEX " + ix.Name
+			if ix.Primary {
+				ix.Definition = "PRIMARY KEY"
+			}
+			d.Indexes = append(d.Indexes, ix)
+		}
+		return idxRows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func tableDataMySQL(ctx context.Context, db *sql.DB, schema, name string, page, size int) (*DataPage, error) {
+	p := &DataPage{Page: page, Size: size}
+	err := readOnlyMySQL(ctx, db, func(tx *sql.Tx) error {
+		var rawKind string
+		err := tx.QueryRowContext(ctx, `
+			SELECT TABLE_TYPE
+			FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, schema, name,
+		).Scan(&rawKind)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("tabel %s.%s: %w", schema, name, domain.ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		kind := "tabel"
+		if strings.EqualFold(rawKind, "VIEW") {
+			kind = "view"
+		}
+		p.Table = Table{Schema: schema, Name: name, Kind: kind}
+
+		pkRows, err := tx.QueryContext(ctx, `
+			SELECT COLUMN_NAME
+			FROM information_schema.KEY_COLUMN_USAGE
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
+			ORDER BY ORDINAL_POSITION`, schema, name)
+		if err != nil {
+			return err
+		}
+		defer pkRows.Close()
+		var pkCols, quotedPKCols []string
+		for pkRows.Next() {
+			var col string
+			if err := pkRows.Scan(&col); err != nil {
+				return err
+			}
+			pkCols = append(pkCols, col)
+			quotedPKCols = append(quotedPKCols, mysqlQuoteIdent(col))
+		}
+		if err := pkRows.Err(); err != nil {
+			return err
+		}
+
+		orderSQL := ""
+		if len(pkCols) > 0 {
+			orderSQL = " ORDER BY " + strings.Join(quotedPKCols, ", ")
+			p.OrderedBy = strings.Join(pkCols, ", ")
+		}
+
+		quotedTable := mysqlQuoteIdent(schema) + "." + mysqlQuoteIdent(name)
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quotedTable).Scan(&p.Total); err != nil {
+			return err
+		}
+
+		offset := int64(page-1) * int64(size)
+		dataQuery := fmt.Sprintf("SELECT * FROM %s%s LIMIT ? OFFSET ?", quotedTable, orderSQL)
+		rows, err := tx.QueryContext(ctx, dataQuery, size, offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		if p.Columns, err = rows.Columns(); err != nil {
+			return err
+		}
+		types, err := rows.ColumnTypes()
+		if err != nil {
+			return err
+		}
+		isBinary := make([]bool, len(types))
+		for i, ct := range types {
+			tName := strings.ToUpper(ct.DatabaseTypeName())
+			isBinary[i] = strings.Contains(tName, "BLOB") || strings.Contains(tName, "BINARY")
+		}
+
+		p.Rows = [][]Cell{}
+		values := make([]any, len(p.Columns))
+		ptrs := make([]any, len(values))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		for rows.Next() {
+			if err := rows.Scan(ptrs...); err != nil {
+				return err
+			}
+			row := make([]Cell, len(values))
+			for i, v := range values {
+				row[i] = formatCell(v, isBinary[i])
+			}
+			p.Rows = append(p.Rows, row)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func mysqlQuoteIdent(ident string) string {
+	return "`" + strings.ReplaceAll(ident, "`", "``") + "`"
 }

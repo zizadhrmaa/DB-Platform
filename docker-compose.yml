@@ -57,6 +57,18 @@ services:
       interval: 2s
       retries: 30
 
+  target-mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: mysql_root_pass
+      MYSQL_DATABASE: kampus
+      MYSQL_USER: platform_app
+      MYSQL_PASSWORD: platform_app_pass
+    ports: ["3306:3306"]
+    volumes:
+      - ./deploy/sample/kampus_mysql.sql:/docker-entrypoint-initdb.d/01-kampus.sql:ro
+      - mysql-data:/var/lib/mysql
+
   app:
     profiles: ["app"]
     build: .
@@ -71,3 +83,4 @@ volumes:
   platform-data:
   toko-data:
   kampus-data:
+  mysql-data:

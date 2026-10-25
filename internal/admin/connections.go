@@ -28,11 +28,12 @@ const (
 	maxIdentLen     = 63 // batas nama database dan role di PostgreSQL
 	maxPasswordLen  = 1000
 	defaultPostgres = 5432
+	defaultMySQL    = 3306
 )
 
-// ConnectionForm adalah isi form koneksi sebelum divalidasi.
 type ConnectionForm struct {
 	Name     string
+	DBType   string
 	Host     string
 	Port     string
 	Database string
@@ -41,15 +42,31 @@ type ConnectionForm struct {
 	IsActive bool
 }
 
+func (f ConnectionForm) Parse() (dbmanager.ConnectionInfo, error) {
+	return f.parse()
+}
+
 func (f ConnectionForm) parse() (dbmanager.ConnectionInfo, error) {
+	dbType := strings.ToLower(strings.TrimSpace(f.DBType))
+	if dbType == "" {
+		dbType = dbmanager.DBTypePostgres
+	}
+	if dbType != dbmanager.DBTypePostgres && dbType != dbmanager.DBTypeMySQL {
+		return dbmanager.ConnectionInfo{}, invalid("Tipe database tidak didukung.")
+	}
+	port := defaultPostgres
+	if dbType == dbmanager.DBTypeMySQL {
+		port = defaultMySQL
+	}
 	c := dbmanager.ConnectionInfo{
 		Name:     strings.TrimSpace(f.Name),
+		DBType:   dbType,
 		Host:     strings.TrimSpace(f.Host),
 		Database: strings.TrimSpace(f.Database),
 		Username: strings.TrimSpace(f.Username),
 		SSLMode:  f.SSLMode,
 		IsActive: f.IsActive,
-		Port:     defaultPostgres,
+		Port:     port,
 	}
 	switch {
 	case c.Name == "":
@@ -85,7 +102,7 @@ func (f ConnectionForm) parse() (dbmanager.ConnectionInfo, error) {
 
 func (s *Connections) List(ctx context.Context) ([]dbmanager.ConnectionInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, name, host, port, database_name, username, sslmode, is_active
+		SELECT id, name, COALESCE(db_type, 'postgres'), host, port, database_name, username, sslmode, is_active
 		FROM db_connections ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
@@ -94,7 +111,7 @@ func (s *Connections) List(ctx context.Context) ([]dbmanager.ConnectionInfo, err
 	list := []dbmanager.ConnectionInfo{}
 	for rows.Next() {
 		var c dbmanager.ConnectionInfo
-		if err := rows.Scan(&c.ID, &c.Name, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.DBType, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive); err != nil {
 			return nil, err
 		}
 		list = append(list, c)
@@ -105,9 +122,9 @@ func (s *Connections) List(ctx context.Context) ([]dbmanager.ConnectionInfo, err
 func (s *Connections) Get(ctx context.Context, id int64) (*dbmanager.ConnectionInfo, error) {
 	c := &dbmanager.ConnectionInfo{ID: id}
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT name, host, port, database_name, username, sslmode, is_active
+		SELECT name, COALESCE(db_type, 'postgres'), host, port, database_name, username, sslmode, is_active
 		FROM db_connections WHERE id = $1`, id,
-	).Scan(&c.Name, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive)
+	).Scan(&c.Name, &c.DBType, &c.Host, &c.Port, &c.Database, &c.Username, &c.SSLMode, &c.IsActive)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("koneksi %d: %w", id, domain.ErrNotFound)
 	}
@@ -128,9 +145,9 @@ func (s *Connections) Create(ctx context.Context, f ConnectionForm, password str
 	}
 	var id int64
 	err = s.DB.QueryRowContext(ctx, `
-		INSERT INTO db_connections (name, host, port, database_name, username, password_ciphertext, sslmode, is_active, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		c.Name, c.Host, c.Port, c.Database, c.Username, cipher, c.SSLMode, c.IsActive, createdBy,
+		INSERT INTO db_connections (name, db_type, host, port, database_name, username, password_ciphertext, sslmode, is_active, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		c.Name, c.DBType, c.Host, c.Port, c.Database, c.Username, cipher, c.SSLMode, c.IsActive, createdBy,
 	).Scan(&id)
 	if pgCode(err) == pgUniqueViolation {
 		return 0, invalid("Nama koneksi sudah dipakai.")
@@ -138,14 +155,11 @@ func (s *Connections) Create(ctx context.Context, f ConnectionForm, password str
 	return id, err
 }
 
-// Update mengubah data koneksi. Password kosong berarti password lama
-// dipertahankan. Pemanggil perlu memanggil Manager.Invalidate setelahnya.
 func (s *Connections) Update(ctx context.Context, id int64, f ConnectionForm, password string) error {
 	c, err := f.parse()
 	if err != nil {
 		return err
 	}
-	// NULL membuat coalesce di query mempertahankan password lama.
 	var cipher any
 	if password != "" {
 		if cipher, err = s.encrypt(password); err != nil {
@@ -154,12 +168,12 @@ func (s *Connections) Update(ctx context.Context, id int64, f ConnectionForm, pa
 	}
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE db_connections
-		SET name = $2, host = $3, port = $4, database_name = $5, username = $6,
-		    sslmode = $7, is_active = $8,
-		    password_ciphertext = coalesce($9, password_ciphertext),
+		SET name = $2, db_type = $3, host = $4, port = $5, database_name = $6, username = $7,
+		    sslmode = $8, is_active = $9,
+		    password_ciphertext = coalesce($10, password_ciphertext),
 		    updated_at = now()
 		WHERE id = $1`,
-		id, c.Name, c.Host, c.Port, c.Database, c.Username, c.SSLMode, c.IsActive, cipher)
+		id, c.Name, c.DBType, c.Host, c.Port, c.Database, c.Username, c.SSLMode, c.IsActive, cipher)
 	if pgCode(err) == pgUniqueViolation {
 		return invalid("Nama koneksi sudah dipakai.")
 	}

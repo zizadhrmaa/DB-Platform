@@ -12,6 +12,7 @@
   <thead>
     <tr>
       <th scope="col">Nama</th>
+      <th scope="col">DBMS</th>
       <th scope="col">Host</th>
       <th scope="col">Database</th>
       <th scope="col">Username</th>
@@ -22,6 +23,7 @@
   {{range .Data}}
     <tr>
       <td><a href="/admin/databases/{{.ID}}">{{.Name}}</a></td>
+      <td>{{.DBType}}</td>
       <td>{{.Host}}:{{.Port}}</td>
       <td>{{.Database}}</td>
       <td>{{.Username}}</td>
