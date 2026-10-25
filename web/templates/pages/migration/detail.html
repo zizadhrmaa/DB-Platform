@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>Migration v{{.Data.Item.Version}} — {{.Data.Item.Title}}</h1>
+<p><a href="/databases/{{.Data.DBID}}/migrations">Kembali ke riwayat</a></p>
+<p>Status: <strong>{{.Data.Item.Status}}</strong></p>
+<p>Dibuat oleh {{.Data.Item.CreatedBy}} pada {{fmtTime .Data.Item.CreatedAt}}</p>
+<h2>Review SQL</h2>
+<pre><code>{{.Data.Item.SQL}}</code></pre>
+{{if .Data.Item.ErrorMessage}}<p role="alert">Error SQL: {{.Data.Item.ErrorMessage}}</p>{{end}}
+{{if .Data.CanEdit}}{{if .Data.Item.Status.Editable}}
+<p><a href="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/edit">Edit SQL</a></p>
+<form method="post" action="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/execute">{{template "csrf" .}}<button type="submit">Jalankan migration</button></form>
+<form method="post" action="/databases/{{.Data.DBID}}/migrations/{{.Data.Item.ID}}/discard">{{template "csrf" .}}<button type="submit">Discard migration</button></form>
+{{end}}{{end}}
+<h2>Riwayat percobaan</h2>
+<table><thead><tr><th>Mulai</th><th>Selesai</th><th>Pelaksana</th><th>Status</th><th>Pesan error</th></tr></thead><tbody>
+{{range .Data.Runs}}<tr><td>{{fmtTime .StartedAt}}</td><td>{{fmtTime .FinishedAt}}</td><td>{{.ExecutedBy}}</td><td>{{.Status}}</td><td>{{.ErrorMessage}}</td></tr>{{else}}<tr><td colspan="5">Belum pernah dijalankan</td></tr>{{end}}
+</tbody></table>
+{{end}}
