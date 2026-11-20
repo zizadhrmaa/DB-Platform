@@ -18,13 +18,14 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(obs.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
 		slog.Error("server berhenti", "err", err)
 		os.Exit(1)
@@ -38,6 +39,14 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Inisialisasi OpenTelemetry Tracer Provider
+	_, shutdownTracer, err := obs.InitTracer(ctx, "dbplatform")
+	if err != nil {
+		slog.Warn("gagal inisialisasi opentelemetry tracer", "err", err)
+	} else if shutdownTracer != nil {
+		defer shutdownTracer(context.Background())
+	}
 
 	db, err := platformdb.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -55,6 +64,14 @@ func run() error {
 	}
 	pools := dbmanager.NewPoolManager(db, secrets)
 	defer pools.Close()
+	obs.RegisterPoolProvider(pools)
+
+	httpx.CurrentActorFunc = func(r *http.Request) string {
+		if u, ok := auth.CurrentUser(r.Context()); ok && u != nil {
+			return u.Username
+		}
+		return ""
+	}
 
 	if cfg.AdminPassword != "" {
 		hash, err := auth.HashPassword(cfg.AdminPassword)

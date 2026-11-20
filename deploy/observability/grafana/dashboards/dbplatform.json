@@ -1,0 +1,207 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Queue & Migration Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "drawStyle": "line", "lineInterpolation": "smooth" }
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "sum by (status) (dbp_jobs_total)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Jobs by Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "drawStyle": "bars" }
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "sum by (db) (dbp_job_retries_total)",
+          "legendFormat": "retry - {{db}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Job Retries",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(dbp_queue_wait_seconds_sum[1m]) / rate(dbp_queue_wait_seconds_count[1m])",
+          "legendFormat": "Avg Queue Wait (s)",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(dbp_lock_wait_seconds_sum[1m]) / rate(dbp_lock_wait_seconds_count[1m])",
+          "legendFormat": "Avg Lock Wait (s)",
+          "refId": "B"
+        }
+      ],
+      "title": "Queue & Lock Wait Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "id": 5,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(dbp_migration_duration_seconds_sum[1m]) / rate(dbp_migration_duration_seconds_count[1m])",
+          "legendFormat": "Avg Migration Duration (s)",
+          "refId": "A"
+        }
+      ],
+      "title": "Migration Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "sum by (db) (dbp_batches_processed_total)",
+          "legendFormat": "Batches Committed - {{db}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (db) (dbp_rows_processed_total)",
+          "legendFormat": "Rows Committed - {{db}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Batch & Row Progress",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "id": 7,
+      "title": "Database Connection Pool Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth" }
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "id": 8,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "dbp_pool_open_connections",
+          "legendFormat": "Open Conns (db {{db_id}})",
+          "refId": "A"
+        },
+        {
+          "expr": "dbp_pool_in_use_connections",
+          "legendFormat": "In Use (db {{db_id}})",
+          "refId": "B"
+        },
+        {
+          "expr": "dbp_pool_idle_connections",
+          "legendFormat": "Idle (db {{db_id}})",
+          "refId": "C"
+        }
+      ],
+      "title": "Pool Connections (Open, In-Use, Idle)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(dbp_pool_wait_duration_seconds_total[1m])",
+          "legendFormat": "Pool Wait Rate (s/s) - db {{db_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(dbp_pool_wait_count_total[1m])",
+          "legendFormat": "Wait Count Rate - db {{db_id}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Pool Wait Count & Duration",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["dbplatform", "observability"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "DB-Platform Observability",
+  "uid": "dbplatform-obs"
+}

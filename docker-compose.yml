@@ -79,6 +79,54 @@ services:
     depends_on:
       platform-db: { condition: service_healthy }
 
+  # Observability Stack (Profile: obs)
+  # Jalankan: docker compose --profile obs up -d
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    profiles: ["obs"]
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./deploy/observability/otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    profiles: ["obs"]
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Web UI
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["obs"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090" # Web UI
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["obs"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./deploy/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./deploy/observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/provisioning/dashboards/json
+    ports:
+      - "3000:3000" # Web UI
+    depends_on:
+      - prometheus
+      - jaeger
+
 volumes:
   platform-data:
   toko-data:

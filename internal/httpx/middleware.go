@@ -1,11 +1,15 @@
 package httpx
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 )
 
 // Chain(h, a, b, c) sama dengan a(b(c(h))).
@@ -55,14 +59,62 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// RequestLog sengaja tidak mencatat query string, header, atau body supaya
-// password dan session ID tidak masuk log.
+// RequestLog mencatat setiap request HTTP dengan correlation ID, actor, database,
+// status, durasi, dan tracing context OpenTelemetry.
 func RequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = r.Header.Get("X-Correlation-ID")
+		}
+		if reqID == "" {
+			b := make([]byte, 12)
+			rand.Read(b)
+			reqID = hex.EncodeToString(b)
+		}
+		w.Header().Set("X-Request-ID", reqID)
+
+		ctx := obs.WithRequestID(r.Context(), reqID)
+		ctx, span := obs.StartSpan(ctx, r.Method+" "+r.URL.Path)
+		defer span.End()
+
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		slog.Info("http", "method", r.Method, "path", r.URL.Path, "status", rec.status,
-			"dur_ms", time.Since(start).Milliseconds())
+		next.ServeHTTP(rec, r.WithContext(ctx))
+
+		actor := "anonymous"
+		if CurrentActorFunc != nil {
+			if a := CurrentActorFunc(r); a != "" {
+				actor = a
+			}
+		}
+		ctx = obs.WithActor(ctx, actor)
+
+		dbID := r.PathValue("dbID")
+		if dbID != "" {
+			ctx = obs.WithDatabase(ctx, dbID)
+		}
+
+		logAttrs := []any{
+			"event", "http_request",
+			"actor", actor,
+			"status", rec.status,
+			"correlation_id", reqID,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"dur_ms", time.Since(start).Milliseconds(),
+		}
+		if dbID != "" {
+			logAttrs = append(logAttrs, "database", dbID)
+		}
+
+		if rec.status >= 500 {
+			slog.ErrorContext(ctx, "http", logAttrs...)
+		} else if rec.status >= 400 {
+			slog.WarnContext(ctx, "http", logAttrs...)
+		} else {
+			slog.InfoContext(ctx, "http", logAttrs...)
+		}
 	})
 }

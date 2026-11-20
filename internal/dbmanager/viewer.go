@@ -101,17 +101,18 @@ func (p *DataPage) PageCount() int64 {
 }
 
 // readOnly menjalankan fn di transaction read-only dengan batas waktu,
-// lalu selalu di-rollback.
+// lalu selalu di-rollback. Seluruh eksekusi dan transaction dicatat melalui LoggedDB.
 func readOnly(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	ldb := WrapDB(db)
+	ltx, err := ldb.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return SanitizeError(err)
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '10s'`); err != nil {
+	defer ltx.Rollback()
+	if _, err := ltx.ExecContext(ctx, `SET LOCAL statement_timeout = '10s'`); err != nil {
 		return SanitizeError(err)
 	}
-	return viewerError(fn(tx))
+	return viewerError(fn(ltx.Raw()))
 }
 
 // viewerError mengubah error dari database target menjadi error domain.
@@ -494,12 +495,13 @@ func truncate(s string) Cell {
 }
 
 func readOnlyMySQL(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	ldb := WrapDB(db)
+	ltx, err := ldb.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return SanitizeError(err)
 	}
-	defer tx.Rollback()
-	return viewerError(fn(tx))
+	defer ltx.Rollback()
+	return viewerError(fn(ltx.Raw()))
 }
 
 func listTablesMySQL(ctx context.Context, db *sql.DB) ([]Table, error) {
