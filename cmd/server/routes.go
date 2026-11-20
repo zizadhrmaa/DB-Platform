@@ -11,6 +11,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
@@ -36,6 +37,7 @@ func (app *App) routes() http.Handler {
 	static, _ := fs.Sub(web.FS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.Handle("GET /metrics", obs.MetricsHandler())
 
 	login := auth.RequireLogin
 	adminOnly := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
@@ -46,12 +48,18 @@ func (app *App) routes() http.Handler {
 	mux.HandleFunc("POST /login", app.login)
 	mux.Handle("POST /logout", login(http.HandlerFunc(app.logout)))
 
-	// Database selection & viewer
+	// Database selection & viewer (HTML M1)
 	mux.Handle("GET /{$}", login(http.RedirectHandler("/databases", http.StatusSeeOther)))
 	mux.Handle("GET /databases", login(http.HandlerFunc(app.databaseList)))
 	mux.Handle("GET /databases/{dbID}", db(authz.ActionViewSchema, http.HandlerFunc(app.databaseShow)))
 	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.tableShow)))
 	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.tableData)))
+
+	// Database selection & viewer (JSON API M2)
+	mux.Handle("GET /api/databases", login(http.HandlerFunc(app.apiDatabaseList)))
+	mux.Handle("GET /api/databases/{dbID}", db(authz.ActionViewSchema, http.HandlerFunc(app.apiDatabaseShow)))
+	mux.Handle("GET /api/databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.apiTableShow)))
+	mux.Handle("GET /api/databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.apiTableData)))
 
 	// Query console read-only, belum dikerjakan.
 	mux.Handle("GET /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("form query read-only")))

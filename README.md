@@ -202,9 +202,164 @@ cmd/server/          entry point & daftar route
 internal/auth/       authentication & session
 internal/authz/      authorization (kebijakan terpusat)
 internal/admin/      kelola user, group, grant
-internal/dbmanager/  koneksi DB target & viewer
+internal/dbmanager/  koneksi DB target, viewer & SQL logging wrapper
 internal/migration/  migration & riwayat
+internal/obs/        observability (structured JSON log, OpenTelemetry tracing, Prometheus metrics)
 internal/platformdb/ schema database internal
 internal/testutil/   database khusus testing + fixture
-web/                 template Go & aset statis
+frontend/            SPA viewer & manajemen (Vite + React + TypeScript)
+deploy/              sample database & konfigurasi observability
+web/                 template Go, fallback embed & aset statis
+```
+
+---
+
+## Milestone 2: Logging, Tracing, dan Observability
+
+### 1. Structured Logging JSON (`internal/obs`)
+
+Seluruh log aplikasi menggunakan structured log berformat JSON via `log/slog` dengan handler pembungkus di `internal/obs/handler.go`. Log dicetak ke stdout/stderr dan tidak disimpan di database platform.
+
+#### Atribut Wajib
+Setiap log HTTP dan aktivitas memuat atribut wajib berikut:
+- `time`: Stempel waktu ISO 8601 UTC.
+- `level`: Level log (`INFO`, `WARN`, `ERROR`, `DEBUG`).
+- `event`: Nama kejadian/aktivitas (misal: `http_request`, `sql_start`, `sql_result`, `sql_commit`, `sql_rollback`).
+- `actor`: Username pengguna yang terautentikasi (atau `anonymous`).
+- `database`: ID atau nama database target yang sedang diakses.
+- `status`: Kode status HTTP atau status eksekusi (`success`, `failed`).
+- `correlation_id` / `request_id`: ID korelasi pelacakan request lintas komponen (dari header `X-Request-ID` atau digenerate otomatis).
+- `trace_id` & `span_id`: ID trace dan span OpenTelemetry yang aktif pada context saat log dipanggil.
+
+#### Redaksi Kunci & Nilai Sensitif
+Handler secara otomatis mendeteksi dan menyamarkan informasi sensitif:
+- Seluruh key atribut yang mengandung kata kunci seperti `password`, `passwd`, `secret`, `token`, `session`, `cookie`, `csrf`, `dsn`, `authorization`, `ciphertext`, diganti nilainya menjadi `[REDACTED]`.
+- String koneksi (DSN PostgreSQL atau MySQL) yang berada di dalam pesan atau argumen diredaksi bagian password-nya (misal: `postgres://user:[REDACTED]@host:5432/db`).
+- Parameter query SQL diredaksi menggunakan `obs.RedactArgs`.
+
+#### Contoh Output Log HTTP:
+```json
+{
+  "time": "2026-11-20T11:15:30.123456Z",
+  "level": "INFO",
+  "msg": "http",
+  "event": "http_request",
+  "actor": "bob",
+  "database": "1",
+  "status": 200,
+  "correlation_id": "a1f8b29c4d7e",
+  "method": "GET",
+  "path": "/api/databases/1/tables/public/items/data?page=1&size=50",
+  "dur_ms": 12,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7"
+}
+```
+
+### 2. Wrapper SQL Ber-log (`internal/dbmanager/logged.go`)
+
+Seluruh query database (termasuk query read-only viewer di `viewer.go`, `service.go`, `explain.go`, `diff.go`, dan worker) dibungkus oleh `LoggedDB` / `LoggedTx`.
+Mulai eksekusi, hasil eksekusi, serta commit/rollback dicatat secara terpisah:
+- **`sql_start`**: mencatat SQL query dan parameter yang diredaksi sebelum query dijalankan.
+- **`sql_result`**: mencatat durasi (`dur_ms`), jumlah row yang terpengaruh/dikembalikan, dan kode `sqlstate` jika terjadi error.
+- **`sql_commit`** / **`sql_rollback`**: mencatat hasil penyelesaian transaksi beserta durasinya.
+- Jika terdapat metadata job/migration di context (`obs.WithJobContext`), log otomatis menambahkan `job_id`, `execution_id`, `migration_id`, `attempt`, dan `batch`.
+
+#### Contoh Output Log SQL:
+```json
+{
+  "time": "2026-11-20T11:15:30.130100Z",
+  "level": "INFO",
+  "msg": "sql_start",
+  "event": "sql_start",
+  "query": "SELECT * FROM items WHERE category = $1",
+  "params": ["buku"],
+  "database": "toko",
+  "actor": "bob",
+  "request_id": "a1f8b29c4d7e",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "5a3c9b21f0e47d12"
+}
+```
+
+```json
+{
+  "time": "2026-11-20T11:15:30.134500Z",
+  "level": "INFO",
+  "msg": "sql_result",
+  "event": "sql_result",
+  "query": "SELECT * FROM items WHERE category = $1",
+  "params": ["buku"],
+  "dur_ms": 4,
+  "rows_affected": 0,
+  "status": "success",
+  "database": "toko",
+  "actor": "bob",
+  "request_id": "a1f8b29c4d7e",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "5a3c9b21f0e47d12"
+}
+```
+
+### 3. Tracing OpenTelemetry (`internal/obs/trace.go`)
+
+Tracing OpenTelemetry menghubungkan alur API &rarr; Queue &rarr; Worker &rarr; Lock &rarr; Database query.
+- **Trace Context Propagation**: fungsi `obs.InjectTraceParent(ctx)` mengekspor context ke format standar W3C `traceparent` (contoh: `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`) yang disimpan di kolom `jobs.trace_context` saat enqueue. Worker kemudian memanggil `obs.ExtractTraceParent(ctx, traceparent)` sehingga span di dalam worker menjadi anak dari trace yang diawali oleh request API.
+- **Span Exporter**: default menggunakan console/stdout (atau OTLP Collector saat stack observability dijalankan).
+
+#### Contoh Struktur Span:
+```
+Span: GET /api/databases/1/tables/public/items/data
+ ├─ Span: db.query (statement: "SELECT count(*) FROM items")
+ └─ Span: db.query (statement: "SELECT id, name FROM items ORDER BY id LIMIT 50")
+```
+
+### 4. Observability Stack (Collector, Prometheus, Grafana)
+
+Disediakan stack observability lengkap di `docker-compose.yml` di bawah profile `obs`:
+- **OpenTelemetry Collector**: menerima traces & logs OTLP gRPC/HTTP di port `4317` & `4318`.
+- **Jaeger**: visualisasi distributed trace di `http://localhost:16686`.
+- **Prometheus**: mengikis metrik aplikasi setiap 5 detik di `http://localhost:9090`.
+- **Grafana**: dashboard analitik terpusat di `http://localhost:3000` (user: `admin`, pass: `admin`).
+
+#### Menjalankan Stack Observability:
+```bash
+make obs-up          # Menjalankan otel-collector, jaeger, prometheus, dan grafana
+make obs-down        # Menghentikan stack observability
+```
+
+#### Endpoint Metrik Prometheus (`GET /metrics`)
+Aplikasi mengekspos metrik berformat Prometheus di `/metrics`:
+- **Queue/Job**:
+  - `dbp_jobs_total{db="...", status="..."}`: Jumlah total job per status (`queued`, `running`, `succeeded`, `failed`, `partial`, `uncertain`).
+  - `dbp_job_retries_total{db="..."}`: Jumlah percobaan ulang job.
+  - `dbp_batches_processed_total{db="..."}` & `dbp_rows_processed_total{db="..."}`: Jumlah batch dan row yang telah di-commit.
+  - `dbp_queue_wait_seconds`: Waktu tunggu antrean job.
+  - `dbp_lock_wait_seconds`: Waktu tunggu perolehan lock database.
+  - `dbp_migration_duration_seconds`: Durasi total eksekusi migration.
+- **Connection Pool** (dari `PoolManager.Stats()`):
+  - `dbp_pool_open_connections{db_id="..."}`: Jumlah koneksi terbuka ke target.
+  - `dbp_pool_in_use_connections{db_id="..."}`: Jumlah koneksi yang sedang aktif melayani query.
+  - `dbp_pool_idle_connections{db_id="..."}`: Jumlah koneksi menganggur di pool.
+  - `dbp_pool_max_open_connections{db_id="..."}`: Batas maksimal koneksi pool.
+  - `dbp_pool_wait_count_total{db_id="..."}` & `dbp_pool_wait_duration_seconds_total{db_id="..."}`: Statistik antrean menunggu koneksi.
+
+Dashboard Grafana telah diprovisioning otomatis dari file `deploy/observability/grafana/dashboards/dbplatform.json`.
+
+### 5. Frontend Single-Page Application (SPA) Viewer
+
+Antarmuka viewer telah dipindahkan ke SPA berbasis React + TypeScript di folder `frontend/`:
+- **Daftar Database**: Menampilkan badge DBMS (PostgreSQL / MySQL), badge hak akses (View Only / View + Edit), serta pencarian database.
+- **Ringkasan Schema**: Mengelompokkan relasi berdasarkan schema dengan badge tipe (`tabel`, `view`, `materialized view`, `foreign table`, dsb.).
+- **Detail Struktur Tabel**: Kolom (tipe, nullable, default), Constraint (PK, FK, Unique, Check), dan Index.
+- **Data Viewer Berpagination**: Pagination default 50 baris (dapat dipilih 10, 25, 50, 100, 200), indikator total baris dan estimasi, serta penanganan sel `NULL` dan teks panjang.
+- **Responsivitas**: Komponen tabel lebar memiliki pembungkus scroll horizontal internal (`.table-responsive-wrapper`) sehingga tidak merusak lebar layout halaman baik pada mobile (360px) maupun desktop (1280px).
+
+Untuk menjalankan frontend dev server:
+```bash
+make fe-dev
+```
+Untuk build production:
+```bash
+make fe-build
 ```

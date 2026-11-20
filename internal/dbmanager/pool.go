@@ -88,6 +88,18 @@ func (m *PoolManager) Close() error {
 	return errors.Join(errs...)
 }
 
+// Stats mengembalikan statistik connection pool untuk setiap database target,
+// digunakan untuk metrik Prometheus (dbp_pool_*).
+func (m *PoolManager) Stats() map[int64]sql.DBStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res := make(map[int64]sql.DBStats, len(m.pools))
+	for id, db := range m.pools {
+		res[id] = db.Stats()
+	}
+	return res
+}
+
 func (m *PoolManager) load(ctx context.Context, dbID int64) (ConnectionInfo, []byte, error) {
 	var c ConnectionInfo
 	var cipher []byte
