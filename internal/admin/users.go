@@ -129,17 +129,41 @@ func (s *Store) CreateUser(ctx context.Context, username, password string, isAdm
 // pemanggil juga perlu mencabut session-nya.
 func (s *Store) UpdateUser(ctx context.Context, actorID, id int64, isActive, isAdmin bool) error {
 	return s.withAdminLock(ctx, actorID, id, isActive && isAdmin, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE users SET is_active = $2, is_platform_admin = $3, updated_at = now() WHERE id = $1`,
-			id, isActive, isAdmin)
-		return err
+			id, isActive, isAdmin); err != nil {
+			return err
+		}
+		if !isActive {
+			if _, err := tx.ExecContext(ctx, `UPDATE groups SET leader_user_id = NULL WHERE leader_user_id = $1`, id); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
 func (s *Store) DeleteUser(ctx context.Context, actorID, id int64) error {
 	return s.withAdminLock(ctx, actorID, id, false, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id)
-		return err
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM users u
+			WHERE u.id = $1
+			  AND NOT EXISTS (SELECT 1 FROM migration_runs WHERE executed_by = u.id)
+			  AND NOT EXISTS (SELECT 1 FROM migrations WHERE executed_by = u.id)
+			  AND NOT EXISTS (SELECT 1 FROM change_requests WHERE requested_by = u.id)
+			  AND NOT EXISTS (SELECT 1 FROM change_request_approvals WHERE decided_by = u.id)
+			  AND NOT EXISTS (SELECT 1 FROM jobs WHERE requested_by = u.id)`, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return conflict("User ini sudah tercatat di riwayat migration, request, atau approval, jadi tidak bisa dihapus. Nonaktifkan user ini sebagai gantinya.")
+		}
+		return nil
 	})
 }
 

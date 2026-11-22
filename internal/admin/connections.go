@@ -183,8 +183,30 @@ func (s *Connections) Update(ctx context.Context, id int64, f ConnectionForm, pa
 // Delete ikut menghapus grant dan riwayat migration database tersebut.
 // Pemanggil perlu memanggil Manager.Invalidate setelahnya.
 func (s *Connections) Delete(ctx context.Context, id int64) error {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM db_connections WHERE id = $1`, id)
-	return notFoundIfNone(res, err, "koneksi", id)
+	res, err := s.DB.ExecContext(ctx, `
+		DELETE FROM db_connections d
+		WHERE d.id = $1
+		  AND NOT EXISTS (SELECT 1 FROM migration_runs r JOIN migrations m ON m.id = r.migration_id WHERE m.db_id = d.id)
+		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.db_id = d.id)
+		  AND NOT EXISTS (SELECT 1 FROM change_requests c WHERE c.db_id = d.id)`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	var exists bool
+	if err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM db_connections WHERE id = $1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return conflict("Koneksi ini sudah punya riwayat migration, request, atau job, jadi tidak bisa dihapus. Nonaktifkan koneksi ini sebagai gantinya.")
+	}
+	return fmt.Errorf("koneksi %d: %w", id, domain.ErrNotFound)
 }
 
 // Test mencoba terhubung memakai data koneksi yang tersimpan.

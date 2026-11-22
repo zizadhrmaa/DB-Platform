@@ -77,7 +77,7 @@
         <input id="confirm-delete" name="confirm" type="checkbox" required>
         <label for="confirm-delete">Saya yakin ingin menghapus koneksi {{.Form.Name}}</label>
       </div>
-      <p class="hint">Grant ke group dan seluruh riwayat migration database ini ikut terhapus.</p>
+      <p class="hint">Koneksi yang sudah punya riwayat migration, request, atau job tidak bisa dihapus. Nonaktifkan koneksi itu sebagai gantinya.</p>
       <button type="submit" class="danger">Hapus koneksi</button>
     </form>
   </section>

@@ -146,7 +146,17 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 	if e := ValidateSQL(sqlText); e != nil {
 		return e
 	}
-	r, e := s.DB.ExecContext(ctx, `UPDATE migrations SET title=$1,sql_text=$2,updated_by=$3,updated_at=now() WHERE id=$4 AND db_id=$5 AND status IN('pending','failed')`, title, sqlText, u.ID, id, dbID)
+	r, e := s.DB.ExecContext(ctx, `
+		UPDATE migrations SET title=$1, sql_text=$2, updated_by=$3, updated_at=now(), revision=revision+1
+		WHERE id=$4 AND db_id=$5 AND status IN ('pending','failed')
+		  AND NOT EXISTS (
+			SELECT 1 FROM change_requests c
+			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs j
+			WHERE j.migration_id = migrations.id
+			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`,
+		title, sqlText, u.ID, id, dbID)
 	if e != nil {
 		return e
 	}
@@ -156,7 +166,10 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 		if e != nil {
 			return e
 		}
-		return fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status)
+		if !m.Status.Editable() {
+			return fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status)
+		}
+		return fmt.Errorf("%w: migration sedang dalam request perubahan atau antrean, jadi tidak bisa diubah", domain.ErrConflict)
 	}
 	return nil
 }
@@ -167,7 +180,16 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 	if dbID <= 0 || id <= 0 {
 		return domain.ErrInvalidInput
 	}
-	r, e := s.DB.ExecContext(ctx, `UPDATE migrations SET status='discarded',updated_by=$1,updated_at=now() WHERE id=$2 AND db_id=$3 AND status IN('pending','failed')`, u.ID, id, dbID)
+	r, e := s.DB.ExecContext(ctx, `
+		UPDATE migrations SET status='discarded', updated_by=$1, updated_at=now()
+		WHERE id=$2 AND db_id=$3 AND status IN ('pending','failed')
+		  AND NOT EXISTS (
+			SELECT 1 FROM change_requests c
+			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved','queued'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs j
+			WHERE j.migration_id = migrations.id
+			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`, u.ID, id, dbID)
 	if e != nil {
 		return e
 	}
@@ -177,7 +199,10 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 		if e != nil {
 			return e
 		}
-		return fmt.Errorf("%w: migration berstatus %s tidak bisa dibatalkan", domain.ErrConflict, m.Status)
+		if !m.Status.Discardable() {
+			return fmt.Errorf("%w: migration berstatus %s tidak bisa dibatalkan", domain.ErrConflict, m.Status)
+		}
+		return fmt.Errorf("%w: migration sedang dalam request perubahan atau antrean, jadi tidak bisa dibatalkan", domain.ErrConflict)
 	}
 	return nil
 }
