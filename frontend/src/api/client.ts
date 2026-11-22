@@ -1,3 +1,5 @@
+import { getCsrfToken, notifyUnauthorized } from './session';
+
 export interface APIErrorDetail {
   code: string;
   message: string;
@@ -8,36 +10,58 @@ export interface APIErrorResponse {
   error: APIErrorDetail;
 }
 
-export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers || {});
-  headers.set('Accept', 'application/json');
+export class ApiError extends Error {
+  code: string;
+  status: number;
+  fields?: Record<string, string>;
 
-  const res = await fetch(path, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  constructor(message: string, code: string, status: number, fields?: Record<string, string>) {
+    super(message);
+    this.code = code;
+    this.status = status;
+    this.fields = fields;
+  }
+}
+
+type ApiOptions = RequestInit & { json?: unknown };
+
+export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
+  const { json, ...init } = options;
+  const method = (init.method || 'GET').toUpperCase();
+  const headers = new Headers(init.headers || {});
+  headers.set('Accept', 'application/json');
+  if (json !== undefined) {
+    headers.set('Content-Type', 'application/json');
+    init.body = JSON.stringify(json);
+  }
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    const token = getCsrfToken();
+    if (token) headers.set('X-CSRF-Token', token);
+  }
+
+  const res = await fetch(path, { ...init, method, headers, credentials: 'same-origin' });
+
+  if (res.status === 401) notifyUnauthorized();
 
   if (!res.ok) {
-    let errDetail: APIErrorDetail = {
+    let detail: APIErrorDetail = {
       code: 'http_error',
       message: `Permintaan gagal dengan status ${res.status}`,
     };
     try {
       const data: APIErrorResponse = await res.json();
-      if (data && data.error) {
-        errDetail = data.error;
-      }
+      if (data && data.error) detail = data.error;
     } catch {
-      // bukan JSON error
+      detail = { ...detail };
     }
-    const err = new Error(errDetail.message) as Error & { code: string; status: number; fields?: Record<string, string> };
-    err.code = errDetail.code;
-    err.status = res.status;
-    err.fields = errDetail.fields;
-    throw err;
+    throw new ApiError(detail.message, detail.code, res.status, detail.fields);
   }
 
+  if (res.status === 204) return undefined as T;
+  const type = res.headers.get('Content-Type') || '';
+  if (!type.includes('application/json')) {
+    throw new ApiError('Respons server tidak valid.', 'invalid_response', res.status);
+  }
   return res.json() as Promise<T>;
 }
 
