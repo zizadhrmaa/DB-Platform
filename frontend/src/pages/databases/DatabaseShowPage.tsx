@@ -75,6 +75,12 @@ export const DatabaseShowPage: React.FC = () => {
         </div>
       </div>
 
+      <div className="row" style={{ marginBottom: '1.25rem' }}>
+        <Link className="btn btn-secondary" to={`/databases/${db.id}/changes`}>
+          Request perubahan
+        </Link>
+      </div>
+
       {schemas.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
           Tidak ada tabel yang ditemukan di database ini.
