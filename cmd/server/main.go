@@ -1,4 +1,3 @@
-// Command server menjalankan Database Management Platform.
 package main
 
 import (
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
+	"github.com/zizadhrmaa/DB-Platform/internal/approval"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
@@ -20,6 +20,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
+	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
@@ -40,7 +41,6 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Inisialisasi OpenTelemetry Tracer Provider
 	_, shutdownTracer, err := obs.InitTracer(ctx, "dbplatform")
 	if err != nil {
 		slog.Warn("gagal inisialisasi opentelemetry tracer", "err", err)
@@ -57,7 +57,6 @@ func run() error {
 		return err
 	}
 
-	// Cek key sejak start supaya salah konfigurasi langsung ketahuan.
 	secrets, err := dbmanager.NewSecretBoxFromBase64(cfg.SecretKeyB64)
 	if err != nil {
 		return err
@@ -65,13 +64,6 @@ func run() error {
 	pools := dbmanager.NewPoolManager(db, secrets)
 	defer pools.Close()
 	obs.RegisterPoolProvider(pools)
-
-	httpx.CurrentActorFunc = func(r *http.Request) string {
-		if u, ok := auth.CurrentUser(r.Context()); ok && u != nil {
-			return u.Username
-		}
-		return ""
-	}
 
 	if cfg.AdminPassword != "" {
 		hash, err := auth.HashPassword(cfg.AdminPassword)
@@ -91,32 +83,49 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	httpx.ErrorRenderer = renderer.ErrorPage
+	httpx.ErrorRenderer = httpx.APIAware(renderer.ErrorPage)
 
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
 	go sessions.RunCleanup(ctx, time.Hour)
 
 	az := &authz.Service{DB: db}
 	migrations := &migration.Store{DB: db, Targets: pools, Authz: az}
-	// Bereskan migration yang tertinggal running kalau server sebelumnya mati.
 	if err := migrations.Recover(ctx); err != nil {
 		slog.Warn("sebagian migration yang terputus belum bisa dibereskan", "err", err)
 	}
 
-	app := &App{
-		DB:           db,
-		View:         renderer,
-		Admin:        &admin.Store{DB: db},
-		Connections:  &admin.Connections{DB: db, Secrets: secrets},
-		Pools:        pools,
-		Authz:        az,
-		Sessions:     sessions,
-		LoginLimiter: auth.NewLoginLimiter(),
-		Migration:    &migration.Handler{Service: migrations, Authz: az, View: renderer},
+	queueStore := &queue.Store{DB: db, Policy: queue.DefaultRetryPolicy()}
+	approvals := &approval.Store{
+		DB:    db,
+		Queue: queueStore,
+		Guard: approval.DefaultGuard(migrations),
+		Authz: az,
+	}
+	if err := approvals.SyncOpen(ctx); err != nil {
+		slog.Warn("sinkronisasi approval awal belum selesai", "err", err)
 	}
 
-	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.
-	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware}
+	app := &App{
+		DB:            db,
+		View:          renderer,
+		Admin:         &admin.Store{DB: db},
+		Connections:   &admin.Connections{DB: db, Secrets: secrets},
+		Pools:         pools,
+		Authz:         az,
+		Sessions:      sessions,
+		LoginLimiter:  auth.NewLoginLimiter(),
+		Migration:     &migration.Handler{Service: migrations, Authz: az, View: renderer},
+		Approvals:     approvals,
+		MetricsToken:  cfg.MetricsToken,
+		MetricsStrict: cfg.IsProduction() && cfg.MetricsToken == "",
+	}
+
+	mws := []func(http.Handler) http.Handler{
+		httpx.Recover,
+		httpx.SecurityHeaders,
+		httpx.RequestLog,
+		sessions.Middleware,
+	}
 	if cfg.DevAuthUserID != 0 {
 		slog.Warn("DEV_AUTH_USER_ID aktif, semua request login sebagai user ini", "user_id", cfg.DevAuthUserID)
 		mws = append(mws, auth.DevAuthMiddleware(db, cfg.DevAuthUserID))
@@ -128,7 +137,7 @@ func run() error {
 		Handler:           httpx.Chain(app.routes(), mws...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second, // eksekusi migration bisa lama
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -143,11 +152,11 @@ func run() error {
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
+		return nil
 	case <-ctx.Done():
 		slog.Info("shutdown")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
-	return nil
 }
