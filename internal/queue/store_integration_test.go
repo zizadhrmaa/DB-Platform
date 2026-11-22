@@ -46,6 +46,13 @@ func mustMigration(t *testing.T, db *sql.DB, dbID int64) int64 {
 	return id
 }
 
+func (f fixture) exec(t *testing.T, q string, args ...any) {
+	t.Helper()
+	if _, err := f.db.Exec(q, args...); err != nil {
+		t.Fatalf("exec %q: %v", q, err)
+	}
+}
+
 func (f fixture) enqueue(t *testing.T, dbID, migID int64, key string) *queue.Job {
 	t.Helper()
 	j, created, err := f.store.Enqueue(context.Background(), queue.EnqueueParams{
@@ -133,6 +140,23 @@ func TestClaimConcurrentOnlyOneRunningPerDatabase(t *testing.T) {
 		f.enqueue(t, dbID, mustMigration(t, f.db, dbID), fmt.Sprintf("k%d", i))
 	}
 
+	// Siapkan 8 koneksi lebih dulu supaya claim benar-benar berjalan
+	// bersamaan, bukan antre membuka koneksi satu per satu. Jalur
+	// deterministiknya diuji di TestClaimRetriesAfterUniqueViolation.
+	f.db.SetMaxOpenConns(8)
+	f.db.SetMaxIdleConns(8)
+	warm := make([]*sql.Conn, 8)
+	for i := range warm {
+		c, err := f.db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		warm[i] = c
+	}
+	for _, c := range warm {
+		c.Close()
+	}
+
 	var (
 		wg      sync.WaitGroup
 		start   = make(chan struct{})
@@ -165,7 +189,9 @@ func TestClaimConcurrentOnlyOneRunningPerDatabase(t *testing.T) {
 		t.Fatalf("tepat satu claim yang berhasil, dapat %d: %v", len(claimed), claimed)
 	}
 	var running int
-	f.db.QueryRow(`SELECT count(*) FROM jobs WHERE db_id = $1 AND status = 'running'`, dbID).Scan(&running)
+	if err := f.db.QueryRow(`SELECT count(*) FROM jobs WHERE db_id = $1 AND status = 'running'`, dbID).Scan(&running); err != nil {
+		t.Fatal(err)
+	}
 	if running != 1 {
 		t.Fatalf("job running di database = %d, seharusnya 1", running)
 	}
@@ -272,7 +298,7 @@ func TestRetryBackoffAndExhaustion(t *testing.T) {
 	}
 
 	// Majukan waktu: attempt kedua, jeda berikutnya sekitar 4s.
-	f.db.Exec(`UPDATE jobs SET next_run_at = now() WHERE id = $1`, j.ID)
+	f.exec(t, `UPDATE jobs SET next_run_at = now() WHERE id = $1`, j.ID)
 	if c := f.claim(t, "w2"); c == nil || c.Attempt != 2 {
 		t.Fatalf("claim setelah jeda lewat harus attempt 2, dapat %+v", c)
 	}
@@ -341,7 +367,7 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 	if rec, _ := f.store.Recoverable(ctx, 10); len(rec) != 0 {
 		t.Fatalf("job dengan lease aktif tidak boleh masuk daftar pemulihan: %+v", rec)
 	}
-	ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1"}, queue.StatusQueued, "worker mati")
+	ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusQueued, "worker mati")
 	if err != nil || ok {
 		t.Fatalf("resolve sebelum lease lewat: ok=%v err=%v", ok, err)
 	}
@@ -350,16 +376,19 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 	}
 
 	// Lease lewat.
-	f.db.Exec(`UPDATE jobs SET lease_until = now() - interval '1 second' WHERE id = $1`, j.ID)
+	f.exec(t, `UPDATE jobs SET lease_until = now() - interval '1 second' WHERE id = $1`, j.ID)
 	rec, err := f.store.Recoverable(ctx, 10)
 	if err != nil || len(rec) != 1 || rec[0].ID != j.ID {
 		t.Fatalf("job dengan lease lewat harus masuk daftar pemulihan: %+v err=%v", rec, err)
 	}
 	// Ekspektasi pemilik yang salah tidak boleh menang.
-	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w9"}, queue.StatusQueued, ""); ok {
+	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w9", Attempt: 1}, queue.StatusQueued, ""); ok {
 		t.Fatal("resolve dengan pemilik yang salah tidak boleh berhasil")
 	}
-	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1"}, queue.StatusUncertain, "hasil belum pasti")
+	if _, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1"}, queue.StatusQueued, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("resolve tanpa attempt harus ErrInvalidInput, dapat %v", err)
+	}
+	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusUncertain, "hasil belum pasti")
 	if err != nil || !ok {
 		t.Fatalf("resolve setelah lease lewat: ok=%v err=%v", ok, err)
 	}
@@ -374,7 +403,7 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 	if rec, _ := f.store.Recoverable(ctx, 10); len(rec) != 1 {
 		t.Fatalf("job uncertain harus masuk daftar pemulihan: %+v", rec)
 	}
-	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusUncertain}, queue.StatusSucceeded, "")
+	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusUncertain, Attempt: 1}, queue.StatusSucceeded, "")
 	if err != nil || !ok {
 		t.Fatalf("resolve uncertain: ok=%v err=%v", ok, err)
 	}
@@ -393,21 +422,21 @@ func TestResolveRequeueRespectsAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	expire := func() {
-		f.db.Exec(`UPDATE jobs SET lease_until = now() - interval '1 second', next_run_at = now() WHERE id = $1`, j.ID)
+		f.exec(t, `UPDATE jobs SET lease_until = now() - interval '1 second', next_run_at = now() WHERE id = $1`, j.ID)
 	}
 
 	f.claim(t, "w1")
 	expire()
-	if ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1"}, queue.StatusQueued, "worker mati"); err != nil || !ok {
+	if ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusQueued, "worker mati"); err != nil || !ok {
 		t.Fatalf("requeue: ok=%v err=%v", ok, err)
 	}
-	f.db.Exec(`UPDATE jobs SET next_run_at = now() WHERE id = $1`, j.ID)
+	f.exec(t, `UPDATE jobs SET next_run_at = now() WHERE id = $1`, j.ID)
 	c := f.claim(t, "w2")
 	if c == nil || c.Attempt != 2 || c.RunID != nil {
 		t.Fatalf("claim ulang harus attempt 2 dengan run_id kosong: %+v", c)
 	}
 	expire()
-	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w2"}, queue.StatusQueued, "worker mati"); !ok {
+	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w2", Attempt: 2}, queue.StatusQueued, "worker mati"); !ok {
 		t.Fatal("requeue kedua harus berhasil di-CAS")
 	}
 	got, _ := f.store.Get(ctx, j.ID)

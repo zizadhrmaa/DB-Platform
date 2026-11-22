@@ -73,5 +73,7 @@ CREATE UNIQUE INDEX jobs_one_open_per_migration_uq ON jobs (migration_id)
     WHERE status IN ('queued','running','uncertain','partial','partially_reverted');
 
 CREATE INDEX jobs_claim_idx    ON jobs (next_run_at, id) WHERE status = 'queued';
+-- Claim hanya mengambil job queued tertua per database.
+CREATE INDEX jobs_queued_per_db_idx ON jobs (db_id, id) WHERE status = 'queued';
 CREATE INDEX jobs_recovery_idx ON jobs (lease_until) WHERE status IN ('running','uncertain');
 CREATE INDEX jobs_db_idx       ON jobs (db_id, created_at DESC, id DESC);

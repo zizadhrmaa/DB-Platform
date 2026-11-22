@@ -28,6 +28,9 @@ const (
 // holdingStatuses harus sama dengan predikat index jobs_one_active_per_db_uq.
 const holdingStatuses = `('running','uncertain','partial','partially_reverted')`
 
+// openStatuses harus sama dengan predikat index jobs_one_open_per_migration_uq.
+const openStatuses = `('queued','running','uncertain','partial','partially_reverted')`
+
 func (s Status) Valid() bool {
 	switch s {
 	case StatusQueued, StatusRunning, StatusSucceeded, StatusFailed,

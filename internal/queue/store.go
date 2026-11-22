@@ -68,7 +68,7 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (*Job, bool, error
 		p.Mode = ModeNormal
 	}
 	if p.MaxAttempts == 0 {
-		p.MaxAttempts = s.Policy.MaxAttempts
+		p.MaxAttempts = s.policy().MaxAttempts
 	}
 	switch {
 	case p.DBID <= 0 || p.MigrationID <= 0:
@@ -109,7 +109,7 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (*Job, bool, error
 		same, err := scanJob(s.DB.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`, p.IdempotencyKey))
 		switch {
 		case err == nil:
-			if same.DBID != p.DBID || same.MigrationID != p.MigrationID || same.Kind != p.Kind {
+			if same.DBID != p.DBID || same.MigrationID != p.MigrationID || same.Kind != p.Kind || same.Mode != p.Mode {
 				return nil, false, fmt.Errorf("%w: kunci idempotensi sudah dipakai untuk eksekusi lain", domain.ErrConflict)
 			}
 			return same, false, nil
@@ -127,8 +127,14 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (*Job, bool, error
 
 		open, err := scanJob(s.DB.QueryRowContext(ctx, `
 			SELECT `+jobColumns+` FROM jobs
-			WHERE migration_id = $1 AND status IN ('queued','running','uncertain','partial','partially_reverted')`, p.MigrationID))
+			WHERE migration_id = $1 AND status IN `+openStatuses, p.MigrationID))
 		if err == nil {
+			// Jangan memberikan ID job up kepada permintaan rollback (atau
+			// sebaliknya) seolah-olah itu eksekusi yang diminta.
+			if open.Kind != p.Kind || open.Mode != p.Mode {
+				return nil, false, fmt.Errorf("%w: migration ini masih punya eksekusi %s (%s) yang belum selesai, job #%d",
+					domain.ErrConflict, open.Kind, open.Mode, open.ID)
+			}
 			return open, false, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -138,36 +144,46 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (*Job, bool, error
 	return nil, false, fmt.Errorf("%w: antrean untuk migration ini sedang berubah, coba lagi", domain.ErrConflict)
 }
 
-// Claim mengambil satu job queued yang sudah waktunya, dari database yang
-// tidak punya job aktif, lalu menjadikannya running milik owner. Hasil nil
-// tanpa error berarti tidak ada job yang bisa diambil.
+// Claim mengambil satu job queued yang sudah waktunya lalu menjadikannya
+// running milik owner. Hasil nil tanpa error berarti tidak ada job yang
+// bisa diambil.
+//
+// Per database, job dijalankan sesuai urutan masuk antrean: hanya job
+// queued tertua (id terkecil) yang menjadi kandidat, termasuk ketika job itu
+// sedang menunggu jeda retry. Jadi migration berikutnya tidak menyalip
+// migration sebelumnya. Database yang punya job aktif dilewati.
 func (s *Store) Claim(ctx context.Context, owner string, lease time.Duration) (*Job, error) {
 	if owner == "" || lease <= 0 {
 		return nil, fmt.Errorf("%w: owner dan lease wajib diisi", domain.ErrInvalidInput)
 	}
-	j, err := scanJob(s.DB.QueryRowContext(ctx, `
-		WITH next AS (
-			SELECT j.id AS next_id FROM jobs j
-			WHERE j.status = 'queued' AND j.next_run_at <= now()
-			  AND NOT EXISTS (SELECT 1 FROM jobs a WHERE a.db_id = j.db_id AND a.status IN `+holdingStatuses+`)
-			ORDER BY j.next_run_at, j.id
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE jobs SET status = 'running', attempt = attempt + 1, run_id = NULL,
-		       lease_owner = $1, lease_until = now() + $2 * interval '1 millisecond',
-		       started_at = COALESCE(started_at, now()), updated_at = now()
-		FROM next WHERE jobs.id = next.next_id
-		RETURNING `+jobColumns, owner, millis(lease)))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	for range 3 {
+		j, err := scanJob(s.DB.QueryRowContext(ctx, `
+			WITH next AS (
+				SELECT j.id AS next_id FROM jobs j
+				WHERE j.status = 'queued' AND j.next_run_at <= now()
+				  AND NOT EXISTS (SELECT 1 FROM jobs a WHERE a.db_id = j.db_id AND a.status IN `+holdingStatuses+`)
+				  AND NOT EXISTS (SELECT 1 FROM jobs q WHERE q.db_id = j.db_id AND q.status = 'queued' AND q.id < j.id)
+				ORDER BY j.next_run_at, j.id
+				LIMIT 1
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE jobs SET status = 'running', attempt = attempt + 1, run_id = NULL, error_message = NULL,
+			       lease_owner = $1, lease_until = now() + $2 * interval '1 millisecond',
+			       started_at = COALESCE(started_at, now()), updated_at = now()
+			FROM next WHERE jobs.id = next.next_id
+			RETURNING `+jobColumns, owner, millis(lease)))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		// Ada job yang aktif di database yang sama setelah snapshot query ini
+		// diambil, sehingga index unik menolak. Ulangi dengan snapshot baru:
+		// database itu kini terlihat sibuk dan database lain bisa diambil.
+		if isUniqueViolation(err) {
+			continue
+		}
+		return j, err
 	}
-	// Worker lain baru saja mengaktifkan job di database yang sama setelah
-	// snapshot query ini diambil. Index unik menolak; anggap tidak ada job.
-	if isUniqueViolation(err) {
-		return nil, nil
-	}
-	return j, err
+	return nil, nil
 }
 
 // Heartbeat memperpanjang lease. ErrLeaseLost berarti worker harus berhenti.
@@ -243,11 +259,22 @@ func (s *Store) requeue(ctx context.Context, tx *sql.Tx, id int64, attempt, maxA
 		UPDATE jobs SET status = 'queued', error_message = NULLIF($2,''),
 		       next_run_at = now() + $3 * interval '1 millisecond',
 		       lease_owner = NULL, lease_until = NULL, updated_at = now()
-		WHERE id = $1 RETURNING `+jobColumns, id, message, millis(s.Policy.Delay(attempt))))
+		WHERE id = $1 RETURNING `+jobColumns, id, message, millis(s.policy().Delay(attempt))))
+}
+
+// policy mengembalikan Policy, atau DefaultRetryPolicy kalau Store dibuat
+// tanpa Policy, supaya Store{DB: db} tetap punya batas attempt dan jeda.
+func (s *Store) policy() RetryPolicy {
+	if s.Policy.MaxAttempts == 0 && s.Policy.BaseDelay == 0 && s.Policy.MaxDelay == 0 {
+		return DefaultRetryPolicy()
+	}
+	return s.Policy
 }
 
 // Recoverable mengembalikan job yang perlu diperiksa pemulihan: running
-// dengan lease yang sudah lewat, dan uncertain.
+// dengan lease yang sudah lewat, dan uncertain. Running didahulukan supaya
+// job uncertain yang buktinya belum bisa diperiksa (misalnya target mati)
+// tidak menutupi worker yang baru saja mati.
 func (s *Store) Recoverable(ctx context.Context, limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 50
@@ -255,24 +282,32 @@ func (s *Store) Recoverable(ctx context.Context, limit int) ([]Job, error) {
 	return s.query(ctx, `
 		SELECT `+jobColumns+` FROM jobs
 		WHERE (status = 'running' AND lease_until < now()) OR status = 'uncertain'
-		ORDER BY updated_at, id LIMIT $1`, limit)
+		ORDER BY (status = 'running') DESC, updated_at, id LIMIT $1`, limit)
 }
 
 // Expect adalah keadaan job yang dilihat pemulihan sebelum memutuskan.
 // LeaseOwner kosong berarti job tidak punya pemilik (misalnya uncertain).
+// Attempt wajib diisi: status dan pemilik bisa sama persis di attempt
+// berikutnya (satu proses worker memakai owner yang sama untuk semua
+// claim), jadi hanya nomor attempt yang membedakan bukti lama dari baru.
 type Expect struct {
 	Status     Status
 	LeaseOwner string
+	Attempt    int
 }
 
 // Resolve mengubah status job hasil pemulihan dengan compare-and-set: hanya
-// berhasil kalau job masih dalam keadaan from dan, untuk job running,
-// lease-nya sudah lewat. ok=false berarti keadaan sudah berubah (worker
-// ternyata masih hidup, atau pemulihan lain sudah menang) dan tidak ada
-// yang diubah. to=queued memakai aturan retry yang sama dengan Retry.
+// berhasil kalau job masih dalam keadaan from (status, pemilik, dan attempt
+// yang sama) dan, untuk job running, lease-nya sudah lewat. ok=false berarti
+// keadaan sudah berubah (worker ternyata masih hidup, atau pemulihan lain
+// sudah menang) dan tidak ada yang diubah. to=queued memakai aturan retry
+// yang sama dengan Retry.
 func (s *Store) Resolve(ctx context.Context, id int64, from Expect, to Status, message string) (bool, error) {
 	if from.Status != StatusRunning && from.Status != StatusUncertain {
 		return false, fmt.Errorf("%w: pemulihan hanya untuk job running atau uncertain", domain.ErrInvalidInput)
+	}
+	if from.Attempt < 1 {
+		return false, fmt.Errorf("%w: pemulihan wajib menyebut attempt yang diperiksa", domain.ErrInvalidInput)
 	}
 	if to != StatusQueued && !finishable(to) {
 		return false, fmt.Errorf("%w: status hasil pemulihan tidak valid: %s", domain.ErrInvalidInput, to)
@@ -286,8 +321,9 @@ func (s *Store) Resolve(ctx context.Context, id int64, from Expect, to Status, m
 	err = tx.QueryRowContext(ctx, `
 		SELECT attempt, max_attempts FROM jobs
 		WHERE id = $1 AND status = $2 AND lease_owner IS NOT DISTINCT FROM NULLIF($3,'')
+		  AND attempt = $4
 		  AND (status <> 'running' OR lease_until < now())
-		FOR UPDATE`, id, from.Status, from.LeaseOwner).Scan(&attempt, &maxAttempts)
+		FOR UPDATE`, id, from.Status, from.LeaseOwner, from.Attempt).Scan(&attempt, &maxAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
