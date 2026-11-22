@@ -1,18 +1,19 @@
 package httpx
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 )
 
-// Chain(h, a, b, c) sama dengan a(b(c(h))).
 func Chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler {
 	for i := len(mws) - 1; i >= 0; i-- {
 		h = mws[i](h)
@@ -24,7 +25,7 @@ func Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("panic", "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
+				slog.ErrorContext(r.Context(), "panic", "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
 				ErrorRenderer(w, r, http.StatusInternalServerError, PublicMessage(http.StatusInternalServerError))
 			}
 		}()
@@ -32,8 +33,6 @@ func Recover(next http.Handler) http.Handler {
 	})
 }
 
-// SecurityHeaders juga memasang no-store di semua halaman selain /static/
-// karena isinya bisa sensitif.
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -42,7 +41,7 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
-		if !strings.HasPrefix(r.URL.Path, "/static/") {
+		if !strings.HasPrefix(r.URL.Path, "/static/") && !strings.HasPrefix(r.URL.Path, "/app/assets/") {
 			h.Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -59,44 +58,89 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// RequestLog mencatat setiap request HTTP dengan correlation ID, actor, database,
-// status, durasi, dan tracing context OpenTelemetry.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+type logInfoKey struct{}
+
+type logInfo struct {
+	mu       sync.Mutex
+	actor    string
+	database string
+}
+
+func (l *logInfo) snapshot() (string, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.actor, l.database
+}
+
+func logInfoFrom(ctx context.Context) *logInfo {
+	li, _ := ctx.Value(logInfoKey{}).(*logInfo)
+	return li
+}
+
+func SetLogActor(ctx context.Context, actor string) {
+	if li := logInfoFrom(ctx); li != nil {
+		li.mu.Lock()
+		li.actor = actor
+		li.mu.Unlock()
+	}
+}
+
+func SetLogDatabase(ctx context.Context, database string) {
+	if li := logInfoFrom(ctx); li != nil {
+		li.mu.Lock()
+		li.database = database
+		li.mu.Unlock()
+	}
+}
+
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func newRequestID(r *http.Request) string {
+	for _, name := range []string{"X-Request-ID", "X-Correlation-ID"} {
+		if id := r.Header.Get(name); validRequestID(id) {
+			return id
+		}
+	}
+	b := make([]byte, 12)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func RequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
-			reqID = r.Header.Get("X-Correlation-ID")
-		}
-		if reqID == "" {
-			b := make([]byte, 12)
-			rand.Read(b)
-			reqID = hex.EncodeToString(b)
-		}
+		reqID := newRequestID(r)
 		w.Header().Set("X-Request-ID", reqID)
 
-		ctx := obs.WithRequestID(r.Context(), reqID)
+		info := &logInfo{}
+		ctx := context.WithValue(r.Context(), logInfoKey{}, info)
+		ctx = obs.WithRequestID(ctx, reqID)
 		ctx, span := obs.StartSpan(ctx, r.Method+" "+r.URL.Path)
 		defer span.End()
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r.WithContext(ctx))
 
-		actor := "anonymous"
-		if CurrentActorFunc != nil {
-			if a := CurrentActorFunc(r); a != "" {
-				actor = a
-			}
-		}
-		ctx = obs.WithActor(ctx, actor)
-
-		dbID := r.PathValue("dbID")
-		if dbID != "" {
-			ctx = obs.WithDatabase(ctx, dbID)
+		actor, database := info.snapshot()
+		if actor == "" {
+			actor = "anonymous"
 		}
 
-		logAttrs := []any{
+		attrs := []any{
 			"event", "http_request",
 			"actor", actor,
 			"status", rec.status,
@@ -105,16 +149,17 @@ func RequestLog(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"dur_ms", time.Since(start).Milliseconds(),
 		}
-		if dbID != "" {
-			logAttrs = append(logAttrs, "database", dbID)
+		if database != "" {
+			attrs = append(attrs, "database", database)
 		}
 
-		if rec.status >= 500 {
-			slog.ErrorContext(ctx, "http", logAttrs...)
-		} else if rec.status >= 400 {
-			slog.WarnContext(ctx, "http", logAttrs...)
-		} else {
-			slog.InfoContext(ctx, "http", logAttrs...)
+		switch {
+		case rec.status >= 500:
+			slog.ErrorContext(ctx, "http", attrs...)
+		case rec.status >= 400:
+			slog.WarnContext(ctx, "http", attrs...)
+		default:
+			slog.InfoContext(ctx, "http", attrs...)
 		}
 	})
 }

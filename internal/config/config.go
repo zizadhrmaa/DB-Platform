@@ -1,4 +1,3 @@
-// Package config membaca konfigurasi dari environment variable.
 package config
 
 import (
@@ -8,19 +7,18 @@ import (
 )
 
 type Config struct {
-	Env           string // development atau production
+	Env           string
 	Addr          string
 	DatabaseURL   string
-	SecretKeyB64  string // key AES untuk password DB target
+	SecretKeyB64  string
 	AdminUsername string
 	AdminPassword string
-	DevAuthUserID int64 // 0 berarti nonaktif
+	DevAuthUserID int64
+	MetricsToken  string
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
 
-// Browser tidak mengirim cookie Secure lewat http://localhost, jadi hanya
-// dinyalakan di production.
 func (c Config) CookieSecure() bool { return c.IsProduction() }
 
 func Load() (Config, error) {
@@ -31,6 +29,7 @@ func Load() (Config, error) {
 		SecretKeyB64:  os.Getenv("APP_SECRET_KEY"),
 		AdminUsername: getenv("ADMIN_USERNAME", "admin"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+		MetricsToken:  os.Getenv("METRICS_TOKEN"),
 	}
 	if v := os.Getenv("DEV_AUTH_USER_ID"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
