@@ -22,6 +22,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
 	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
+	"github.com/zizadhrmaa/DB-Platform/internal/worker"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
 
@@ -105,6 +106,30 @@ func run() error {
 		slog.Warn("sinkronisasi approval awal belum selesai", "err", err)
 	}
 
+	// Worker memakai context sendiri, bukan ctx sinyal, supaya urutan
+	// shutdown terjaga: HTTP berhenti dulu, lalu worker menyelesaikan job
+	// yang sedang berjalan, baru koneksi database ditutup (defer pools.Close
+	// dan db.Close dijalankan setelah stopWorker).
+	stopWorker := func() {}
+	if cfg.WorkerEnabled {
+		w := newWorker(workerDeps{DB: db, Queue: queueStore, Migrations: migrations, Approvals: approvals},
+			worker.Config{Concurrency: cfg.WorkerConcurrency, JobTimeout: cfg.JobTimeout})
+		workerCtx, cancelWorker := context.WithCancel(context.Background())
+		workerDone := make(chan struct{})
+		go func() {
+			w.Run(workerCtx)
+			close(workerDone)
+		}()
+		stopWorker = func() {
+			cancelWorker()
+			slog.Info("menunggu job yang sedang berjalan selesai")
+			<-workerDone
+		}
+	} else {
+		slog.Warn("WORKER_ENABLED=false, proses ini tidak menjalankan job migration")
+	}
+	defer stopWorker()
+
 	app := &App{
 		DB:            db,
 		View:          renderer,
@@ -116,6 +141,7 @@ func run() error {
 		LoginLimiter:  auth.NewLoginLimiter(),
 		Migration:     &migration.Handler{Service: migrations, Authz: az, View: renderer},
 		Approvals:     approvals,
+		Jobs:          queueStore,
 		MetricsToken:  cfg.MetricsToken,
 		MetricsStrict: cfg.IsProduction() && cfg.MetricsToken == "",
 	}
