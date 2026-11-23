@@ -333,7 +333,7 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 			return s.finishRun(book, id, dbID, runID, StatusFailed, errorMessage(execErr), nil)
 		}
 		// Koneksi putus sebelum COMMIT: transaction pasti batal.
-		return s.finishRun(book, id, dbID, runID, StatusFailed, errorMessage(execErr), ErrInterrupted)
+		return s.finishRun(book, id, dbID, runID, StatusFailed, interruptedMessage, ErrInterrupted)
 	case serverRejected(commitErr):
 		// Server menjawab COMMIT dengan error (misalnya constraint deferred):
 		// transaction batal, ini kegagalan biasa.
