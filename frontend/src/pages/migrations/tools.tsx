@@ -4,7 +4,7 @@ import { apiFetch } from '../../api/client';
 import type { Migration, MigrationDraft } from '../../api/types';
 import { ErrorBanner, Loading } from '../../components/ui';
 import { useAction, useLoad } from '../../hooks';
-import { DraftForm, emptyDraft, sqlBox, useCanEdit } from './shared';
+import { DraftForm, emptyDraft, sqlBox, sqlInput, useCanEdit } from './shared';
 
 // Fitur bonus Milestone 1 yang dipindahkan ke SPA: analisis query (EXPLAIN)
 // dan pembuatan migration dari schema diff.
@@ -205,7 +205,7 @@ export const SchemaDiffPage = () => {
         {data && (
           <label className="field">
             Schema{' '}
-            <select value={data.schema} onChange={(e) => setSchema(e.target.value)}>
+            <select className="input" style={{ width: 'auto' }} value={data.schema} onChange={(e) => setSchema(e.target.value)}>
               {data.schemas.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -219,7 +219,8 @@ export const SchemaDiffPage = () => {
           onChange={(e) => setDesired(e.target.value)}
           rows={16}
           spellCheck={false}
-          style={{ width: '100%', fontFamily: 'monospace', boxSizing: 'border-box' }}
+          className="input"
+          style={sqlInput}
           aria-label="Schema yang diinginkan"
         />
         <div className="row" style={{ marginTop: '0.5rem' }}>

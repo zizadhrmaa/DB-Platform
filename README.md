@@ -681,7 +681,92 @@ akses berubah sebelum job berjalan, approval dicabut dan request kembali ke
 
 Menjalankan SPA: `make fe-build` lalu `make run`, buka `http://localhost:8080/app/`. Untuk pengembangan: `make fe-dev`.
 
-> TODO (Aziza): hasil stress test k6 (script, threshold, hasil per tingkat beban).
+### Stress testing dengan k6 (bonus)
+
+```bash
+make k6                          # atau: bash k6/run.sh
+STAGE_SECONDS=10 SCALE=0.3 make k6   # uji cepat dengan beban kecil
+```
+
+`k6/run.sh` menyiapkan lingkungan terpisah supaya data platform utama tidak
+tersentuh: database platform `k6_platform` dan tiga database target `k6_a`,
+`k6_b`, `k6_c` (masing-masing berisi tabel `k6_items` 1.000 row) di container
+`test-db`, server di port 8081 dengan admin khusus k6 (`WORKER_CONCURRENCY=4`),
+lalu menjalankan k6 dari image `grafana/k6:0.54.0`. Output tersimpan di
+`k6/hasil/output.txt` dan `k6/hasil/summary.json`.
+
+**Script** ([`k6/stress.js`](k6/stress.js)). `setup()` login sebagai admin,
+membuat group k6 (admin sebagai anggota dan leader), mendaftarkan tiga koneksi
+target, dan memberi akses View + Edit. Dua skenario berjalan bersamaan:
+
+- `api`: user membaca API secara bergiliran (daftar database, schema, data
+  tabel, migration, job, riwayat, request) dengan think time 0,5–1 detik.
+- `jobs`: setiap iterasi membuat migration, request `up`, submit, approve
+  oleh leader, lalu enqueue, dan memantau `GET /jobs/{id}` sampai status
+  terminal. Database dipilih bergiliran, jadi ada job bersamaan di database
+  yang sama maupun berbeda. Respons enqueue (202) tidak dihitung sebagai
+  keberhasilan; job baru dihitung sukses setelah berstatus `succeeded`.
+  Enqueue yang dibalas 409 (versi sebelumnya di database itu belum selesai,
+  urutan linear dijaga server) diulang setelah 0,3 detik dan dihitung di
+  metrik `enqueue_conflicts`, bukan sebagai error.
+
+Waktu tunggu queue = `started_at − created_at` job, durasi job =
+`finished_at − started_at`, end-to-end = `finished_at − created_at`, semua dari
+API job.
+
+**Beban.** Beban normal yang kami tetapkan: 10 VU pembaca API dan 2 VU
+pengirim job. Beban dinaikkan bertahap ke 2x dan 4x, lalu diturunkan kembali
+ke normal untuk melihat pemulihan, kemudian ke 0. Setiap tahap 60 detik dengan
+transisi 15 detik.
+
+**Threshold:** p95 response time API (skenario `api`) < 500 ms, error rate
+request (`http_req_failed`) < 1%, tingkat keberhasilan job > 99%, serta p95 API
+< 1000 ms di setiap tahap.
+
+**Hasil** (laptop yang sama dengan dataset uji, server dan PostgreSQL lokal di
+Docker Desktop, 23 November 2026):
+
+| Tahap | VU api/jobs | Request | Request/s | p50 API (ms) | p95 API (ms) | Error rate | Job sukses | Job/menit | Queue wait p50/p95 (ms) | Durasi job p50/p95 (ms) | End-to-end p95 (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Normal | 10/2 | 1.878 | 31,3 | 12,6 | 48,6 | 0,00% | 100% (114) | 114 | 732/862 | 61/98 | 930 |
+| Tinggi (2x) | 20/4 | 3.396 | 56,6 | 17,0 | 47,6 | 0,00% | 100% (172) | 172 | 791/890 | 56/86 | 960 |
+| Puncak (4x) | 40/8 | 5.761 | 96,0 | 15,8 | 52,5 | 0,00% | 100% (182) | 182 | 788/929 | 54/101 | 988 |
+| Pemulihan (normal) | 10/2 | 1.850 | 30,8 | 25,9 | 73,9 | 0,00% | 100% (115) | 115 | 719/859 | 65/86 | 944 |
+
+Total 16.278 request (51,6/s), p95 API keseluruhan 54,4 ms, error rate 0%,
+757 job sukses tanpa job gagal, 1.309 enqueue dibalas 409 lalu diulang. Semua
+threshold lulus.
+
+**Analisis.**
+
+- **API tetap cepat sampai beban 4x.** Throughput request naik hampir linear
+  (31 → 57 → 96 request/s) sementara p95 tetap sekitar 50 ms dan tidak ada
+  error. Eksekusi migration berjalan di worker, jadi request API tidak ikut
+  menunggu SQL; ini tujuan utama antrean asynchronous.
+- **Throughput job jenuh di sekitar 180 job/menit.** Dari normal ke 2x job
+  per menit naik (114 → 172), tetapi dari 2x ke 4x hampir tidak bertambah
+  (182) walaupun pengirim job dua kali lipat. Penyebabnya disengaja: satu
+  database hanya menjalankan satu migration dan migration harus berurutan,
+  sehingga dengan tiga database paling banyak sekitar tiga job berjalan
+  bersamaan. Kelebihan pengirim terlihat sebagai enqueue 409 yang diulang,
+  bukan sebagai job gagal atau double commit.
+- **Waktu tunggu queue sekitar 0,7–0,9 detik di semua tahap** dan tidak
+  menumpuk. Angka ini didominasi interval polling worker saat antrean kosong
+  (1 detik), bukan antrean yang panjang: begitu job di-enqueue, worker
+  mengambilnya pada polling berikutnya. Durasi eksekusi job sendiri hanya
+  sekitar 60 ms (p95 ±100 ms) dan tidak memburuk saat beban naik, karena lock
+  per database mencegah dua migration saling berebut di target yang sama.
+- **Pemulihan.** Setelah beban turun ke normal, error tetap 0 dan throughput
+  job kembali ke tingkat normal (115 job/menit). p50/p95 API sedikit lebih
+  tinggi daripada tahap normal pertama (25,9/73,9 ms vs 12,6/48,6 ms). Dugaan
+  kami (belum diukur per endpoint): pada titik ini setiap database sudah berisi
+  ratusan migration dan entri riwayat,
+  sedangkan `GET /migrations` dan `GET /history` mengembalikan seluruh daftar
+  tanpa pagination, jadi respons membesar seiring data. Pagination pada kedua
+  endpoint itu adalah perbaikan berikutnya jika riwayat tumbuh jauh lebih
+  besar.
+- Interval polling worker bisa diperkecil untuk menurunkan waktu tunggu queue,
+  dengan biaya query `SKIP LOCKED` yang lebih sering ke database platform.
 
 ### Security: SAST dengan CodeQL (bonus)
 

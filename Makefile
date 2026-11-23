@@ -1,7 +1,7 @@
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
 TEST_MYSQL_DATABASE_URL ?= platform_app:platform_app_pass@tcp(localhost:3306)/kampus?parseTime=true&multiStatements=true
 
-.PHONY: up down run test test-unit test-integration vet fmt keygen fe-dev fe-build obs-up obs-down bench-batch
+.PHONY: up down run test test-unit test-integration vet fmt keygen fe-dev fe-build obs-up obs-down bench-batch k6
 
 up:            ## nyalakan semua database 
 	docker compose up -d
@@ -49,3 +49,6 @@ bench-batch:   ## dataset uji: UPDATE penuh tanpa batch vs per batch (database b
 	docker compose up -d --wait test-db
 	docker compose exec -T test-db psql -U postgres -qc "DROP DATABASE IF EXISTS bench" -c "CREATE DATABASE bench"
 	BENCH_DATABASE_URL="$(BENCH_DATABASE_URL)" go run ./cmd/benchbatch -rows $(BENCH_ROWS) -sizes 10000,50000,200000
+
+k6:            ## stress test k6 di lingkungan terpisah (lihat k6/run.sh)
+	bash k6/run.sh

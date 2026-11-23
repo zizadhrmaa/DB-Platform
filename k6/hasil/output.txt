@@ -1,0 +1,26 @@
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+     execution: local
+        script: k6/stress.js
+        output: -
+     scenarios: (100.00%) 2 scenarios, 48 max VUs, 5m45s max duration (incl. graceful stop):
+              * api: Up to 40 looping VUs for 5m15s over 9 stages (gracefulRampDown: 10s, exec: apiUser, gracefulStop: 30s)
+              * jobs: Up to 8 looping VUs for 5m15s over 9 stages (gracefulRampDown: 2m0s, exec: jobUser, gracefulStop: 30s)
+| Tahap | VU api/jobs | Req | Req/s | p50 API (ms) | p95 API (ms) | Error rate | Job sukses | Job/menit | Queue wait p50/p95 (ms) | Durasi job p50/p95 (ms) | End-to-end p95 (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| normal | 10/2 | 1878 | 31.3 | 12.6 | 48.6 | 0.00% | 100.0% (114) | 114.0 | 732/862 | 61/98 | 930 |
+| tinggi_2x | 20/4 | 3396 | 56.6 | 17.0 | 47.6 | 0.00% | 100.0% (172) | 172.0 | 791/890 | 56/86 | 960 |
+| puncak_4x | 40/8 | 5761 | 96.0 | 15.8 | 52.5 | 0.00% | 100.0% (182) | 182.0 | 788/929 | 54/101 | 988 |
+| pemulihan | 10/2 | 1850 | 30.8 | 25.9 | 73.9 | 0.00% | 100.0% (115) | 115.0 | 719/859 | 65/86 | 944 |
+Total: 16278 request (51.6/s), p95 API 54.4 ms, error rate 0.00%, job sukses 757, gagal -, konflik enqueue (409, urutan dijaga) 1309.
+Threshold:
+- http_req_failed rate<0.01: LULUS
+- http_req_duration{scenario:api} p(95)<500: LULUS
+- http_req_duration{scenario:api,stage:tinggi_2x} p(95)<1000: LULUS
+- job_success rate>0.99: LULUS
+- http_req_duration{scenario:api,stage:puncak_4x} p(95)<1000: LULUS
+- http_req_duration{scenario:api,stage:pemulihan} p(95)<1000: LULUS
+- http_req_duration{scenario:api,stage:normal} p(95)<1000: LULUS
