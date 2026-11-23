@@ -17,11 +17,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 )
 
@@ -181,13 +186,27 @@ func fail(msg string) outcome  { return finish(queue.StatusFailed, msg) }
 func retry(msg string) outcome { return outcome{act: actRetry, msg: msg} }
 
 func (w *Worker) process(ctx context.Context, cfg Config, j *queue.Job) {
+	// Lanjutkan trace dari request API yang memasukkan job ini ke antrean.
+	ctx = obs.ExtractTraceParent(ctx, j.TraceContext)
+	ctx, span := obs.StartSpan(ctx, "job.process", trace.WithAttributes(
+		attribute.Int64("job.id", j.ID),
+		attribute.Int64("db.id", j.DBID),
+		attribute.Int64("migration.id", j.MigrationID),
+		attribute.Int("job.attempt", j.Attempt),
+		attribute.String("job.kind", string(j.Kind)),
+	))
+	defer span.End()
+	ctx = obs.WithJobContext(ctx, obs.JobContext{JobID: j.ID, MigrationID: j.MigrationID, Attempt: j.Attempt})
+
 	log := w.logger().With("worker_id", cfg.ID, "job_id", j.ID, "db_id", j.DBID,
 		"migration_id", j.MigrationID, "attempt", j.Attempt, "kind", j.Kind, "mode", j.Mode)
 	attrs := []any{"event", "job.start"}
 	if j.StartedAt != nil && j.Attempt == 1 {
-		attrs = append(attrs, "queue_wait_ms", j.StartedAt.Sub(j.CreatedAt).Milliseconds())
+		wait := j.StartedAt.Sub(j.CreatedAt)
+		attrs = append(attrs, "queue_wait_ms", wait.Milliseconds())
+		obs.RecordQueueWait(wait)
 	}
-	log.Info("job mulai diproses", attrs...)
+	log.InfoContext(ctx, "job mulai diproses", attrs...)
 	begin := time.Now()
 
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
@@ -199,6 +218,21 @@ func (w *Worker) process(ctx context.Context, cfg Config, j *queue.Job) {
 	stopHeartbeat()
 	<-hbDone
 	w.record(ctx, cfg, j, out, log, time.Since(begin))
+
+	span.SetAttributes(attribute.String("job.result", out.label()))
+	if out.act != actFinish || out.status != queue.StatusSucceeded {
+		obs.RecordError(span, errors.New(out.label()+": "+out.msg))
+	}
+}
+
+func (o outcome) label() string {
+	switch o.act {
+	case actLost:
+		return "lease_lost"
+	case actRetry:
+		return "retry"
+	}
+	return string(o.status)
 }
 
 // run memeriksa ulang syarat job lalu menjalankan migration.
@@ -278,22 +312,30 @@ func (w *Worker) record(ctx context.Context, cfg Config, j *queue.Job, out outco
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	log = log.With("duration_ms", took.Milliseconds())
+	// Label metrik memakai ID database (jumlahnya terbatas), bukan job ID.
+	dbLabel := strconv.FormatInt(j.DBID, 10)
 	switch out.act {
 	case actLost:
-		log.Warn("lease job hilang, hasil tidak ditulis", "event", "job.lease_lost")
+		log.WarnContext(ctx, "lease job hilang, hasil tidak ditulis", "event", "job.lease_lost")
 		return
 	case actRetry:
 		nj, err := w.Queue.Retry(ctx, j.ID, cfg.ID, out.msg)
 		if err != nil {
-			log.Warn("gagal menjadwalkan ulang job", "event", "job.retry_error", "err", errType(err))
+			log.WarnContext(ctx, "gagal menjadwalkan ulang job", "event", "job.retry_error", "err", errType(err))
 			return
 		}
-		log.Warn("job dijadwalkan ulang", "event", "job.retry", "status", nj.Status, "next_run_at", nj.NextRunAt, "reason", out.msg)
+		obs.RecordJobRetry(dbLabel)
+		if nj.Status == queue.StatusFailed {
+			obs.RecordJobStatus(dbLabel, string(nj.Status))
+		}
+		log.WarnContext(ctx, "job dijadwalkan ulang", "event", "job.retry", "status", nj.Status, "next_run_at", nj.NextRunAt, "reason", out.msg)
 	case actFinish:
 		if err := w.Queue.Finish(ctx, j.ID, cfg.ID, out.status, out.msg); err != nil {
-			log.Warn("gagal menulis hasil job", "event", "job.finish_error", "status", out.status, "err", errType(err))
+			log.WarnContext(ctx, "gagal menulis hasil job", "event", "job.finish_error", "status", out.status, "err", errType(err))
 			return
 		}
+		obs.RecordJobStatus(dbLabel, string(out.status))
+		obs.RecordMigrationDuration(took)
 		level := slog.LevelInfo
 		if out.status != queue.StatusSucceeded {
 			level = slog.LevelWarn
