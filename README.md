@@ -786,16 +786,20 @@ artifact `codeql-sarif-go` / `codeql-sarif-javascript-typescript`.
 dan seluruh kode TypeScript/React di `frontend/`, dengan suite
 `security-extended`.
 
-**Hasil scan** pada commit `f0a24d9` (merge PR #15, 23 November 2026):
-TypeScript **0 temuan**, Go **10 temuan** dari 3 rule. Severity adalah
-`security-severity` CodeQL untuk rule tersebut (semuanya kategori *high*).
+**Hasil scan** pada commit `d89686e` (merge PR #16, push ke `main`,
+23 November 2026; run `codeql` #45115528553): TypeScript **0 temuan**, Go
+**10 temuan** dari 3 rule. Hasilnya sama dengan scan sebelumnya pada
+`f0a24d9`. Severity adalah `security-severity` CodeQL, sumber adalah lokasi
+nilai dari user yang dirujuk pesan CodeQL. Scan pada pull request memakai
+analisis *diff-informed* (hanya baris yang berubah), jadi bukti lengkapnya
+adalah run push ke `main`.
 
-| Rule | Severity | Lokasi | Dampak | Keputusan | Alasan |
-|---|---|---|---|---|---|
-| `go/sql-injection` | 8.8 (high) | `internal/migration/explain.go:156` | User bisa menjalankan SQL sembarang di database target. | Risiko diterima (perilaku yang memang dirancang) | Menjalankan SQL migration buatan user adalah fungsi inti platform. Analisis query hanya untuk user dengan akses View + Edit (dicek `authz` di route dan lagi di service), SQL berasal dari migration yang tersimpan (bukan parameter request), dan dijalankan di transaction yang **selalu di-rollback** memakai extended protocol, sehingga lebih dari satu statement atau `COMMIT` tersembunyi ditolak driver. Eksekusi sungguhan juga harus lewat approval semua leader. |
-| `go/log-injection` (5 temuan) | 7.8 (high) | `internal/dbmanager/logged.go:130, 152, 157, 167, 182` | Penyerang memalsukan baris log dengan menyisipkan newline. | False positive | Log SQL (query dan parameter) wajib dicatat menurut spek. Semua log ditulis oleh `slog` JSON handler (`cmd/server/main.go:30`), yang meng-escape newline dan tanda kutip di dalam string JSON, jadi input user tidak bisa membuat record log baru. Sudah diuji: query berisi `\n{"level":"ERROR",...}` tetap tercatat sebagai satu nilai string. Parameter SQL juga disamarkan `obs.RedactArgs`. |
-| `go/log-injection` | 7.8 (high) | `internal/approval/store.go:340` | Sama seperti di atas. | False positive | Atribut yang dicatat hanya ID numerik (`int64`) dan status dari konstanta internal; tidak ada teks bebas dari user, dan log tetap melalui JSON handler yang sama. |
-| `go/clear-text-logging` (3 temuan) | 7.5 (high) | `internal/httpx/middleware.go:158, 160, 162` | Data sensitif dari header HTTP tercatat di log. | False positive | Satu-satunya nilai dari header yang dicatat log request adalah `correlation_id` (`X-Request-ID`/`X-Correlation-ID`), yang hanya diterima jika berisi huruf, angka, `-`, `_`, `.` dan maksimal 64 karakter (`validRequestID`), selain itu diganti ID acak. Atribut lain adalah `actor` (username, bukan credential), method, path, status, dan durasi. Cookie session, token CSRF, dan password tidak pernah dicatat; handler log juga menyamarkan key seperti `session`, `token`, `csrf`, `password`, `cookie`, dan `authorization`. |
+| Rule | Severity | Lokasi | Sumber data | Dampak | Keputusan | Alasan |
+|---|---|---|---|---|---|---|
+| `go/sql-injection` | 8.8 (high) | `internal/migration/explain.go:156` (`runStatement`) | Body JSON request (`internal/httpx/jsonbody.go:69-70`) dan form schema diff (`internal/migration/handler.go:291`) | User bisa menjalankan SQL sembarang di database target. | Risiko diterima (perilaku yang memang dirancang) | `runStatement` dipakai analisis query dan schema diff; menjalankan SQL buatan user adalah fungsi inti platform. Keduanya hanya untuk user dengan akses View + Edit (dicek `authz` di route dan lagi di service), berjalan di transaction yang **selalu di-rollback**, dengan extended protocol sehingga lebih dari satu statement atau `COMMIT` tersembunyi ditolak driver. Schema diff juga memaksa `search_path` ke `pg_temp` (DDL hanya membuat tabel temporary), menolak DDL yang menyebut schema target (`checkUnqualified`), dan memakai `statement_timeout` 30 detik serta `lock_timeout` 5 detik. Eksekusi sungguhan selalu lewat approval semua leader. |
+| `go/log-injection` (5 temuan) | 6.1 (medium) | `internal/dbmanager/logged.go:130, 152, 157, 167, 182` | Body JSON request (`internal/httpx/jsonbody.go:69-70`) | Penyerang memalsukan baris log dengan menyisipkan newline. | False positive | Log SQL (query dan parameter) wajib dicatat menurut spek. Semua log ditulis oleh `slog` JSON handler (`cmd/server/main.go:30`), yang meng-escape newline dan tanda kutip di dalam string JSON, jadi input user tidak bisa membuat record log baru. Sudah diuji: query berisi `\n{"level":"ERROR",...}` tetap tercatat sebagai satu nilai string. Parameter SQL juga disamarkan `obs.RedactArgs`. |
+| `go/log-injection` | 6.1 (medium) | `internal/approval/store.go:340` | Body JSON request (`internal/httpx/jsonbody.go:69-70`) | Sama seperti di atas. | False positive | Atribut yang dicatat hanya ID numerik (`int64`) dan status dari konstanta internal; tidak ada teks bebas dari user, dan log tetap melalui JSON handler yang sama. |
+| `go/clear-text-logging` (3 temuan) | 7.5 (high) | `internal/httpx/middleware.go:158, 160, 162` | Header request (`internal/httpx/middleware.go:114`, `X-Request-ID`/`X-Correlation-ID`) | Data sensitif dari header HTTP tercatat di log. | False positive | Nilai dari header itu adalah ID korelasi, bukan credential, dan hanya diterima jika berisi huruf, angka, `-`, `_`, `.` dengan panjang maksimal 64 karakter (`validRequestID`); selain itu diganti ID acak. Cookie session, token CSRF, dan password tidak pernah dicatat; handler log juga menyamarkan key seperti `session`, `token`, `csrf`, `password`, `cookie`, dan `authorization`. |
 
 Tidak ada temuan yang perlu diperbaiki di kode. Hasil bersih tidak berarti
 aplikasi pasti aman: CodeQL tidak menguji logika otorisasi, yang dicakup oleh
