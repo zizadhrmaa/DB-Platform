@@ -271,7 +271,10 @@ make test-integration   # unit + integration terhadap container test-db
 ```
 
 Integration test memakai schema PostgreSQL acak per test (`internal/testutil`),
-sehingga terisolasi dan aman dijalankan paralel. Test API mencakup alur
+sehingga data antar-test terisolasi. Paket test dijalankan berurutan
+(`go test -p 1`) karena advisory lock eksekusi migration berlaku per database
+PostgreSQL, bukan per schema, sehingga paket yang berjalan paralel bisa
+berebut lock untuk `db_id` fixture yang sama. Test API mencakup alur
 berhasil, gagal, dan penolakan akses (non-admin, View Only, tanpa akses,
 bukan leader), termasuk workflow approval dan pencabutan approval.
 
@@ -775,11 +778,25 @@ Workflow `.github/workflows/codeql.yml` menjalankan CodeQL (query
 `main`, setiap Senin, dan manual lewat *Run workflow*. Hasilnya ada di tab
 **Security → Code scanning**.
 
-> TODO (Mirza): setelah scan pertama selesai, isi tabel temuan di bawah: rule,
-> severity, lokasi, dampak, keputusan (diperbaiki / false positive / risiko
-> diterima) beserta alasan, dan commit perbaikan + hasil scan ulang. Jika tidak
-> ada temuan, tulis cakupan kode yang dianalisis dan lampirkan hasil scan.
+Setiap run juga menulis ringkasan temuan (rule, severity, lokasi, dan sumber
+data) ke job summary dan anotasi run, serta menyimpan file SARIF sebagai
+artifact `codeql-sarif-go` / `codeql-sarif-javascript-typescript`.
 
-| Rule | Severity | Lokasi | Dampak | Keputusan | Alasan / commit |
+**Cakupan.** Seluruh kode Go (`cmd/`, `internal/`, `web/`: backend dan worker)
+dan seluruh kode TypeScript/React di `frontend/`, dengan suite
+`security-extended`.
+
+**Hasil scan** pada commit `f0a24d9` (merge PR #15, 23 November 2026):
+TypeScript **0 temuan**, Go **10 temuan** dari 3 rule. Severity adalah
+`security-severity` CodeQL untuk rule tersebut (semuanya kategori *high*).
+
+| Rule | Severity | Lokasi | Dampak | Keputusan | Alasan |
 |---|---|---|---|---|---|
-| | | | | | |
+| `go/sql-injection` | 8.8 (high) | `internal/migration/explain.go:156` | User bisa menjalankan SQL sembarang di database target. | Risiko diterima (perilaku yang memang dirancang) | Menjalankan SQL migration buatan user adalah fungsi inti platform. Analisis query hanya untuk user dengan akses View + Edit (dicek `authz` di route dan lagi di service), SQL berasal dari migration yang tersimpan (bukan parameter request), dan dijalankan di transaction yang **selalu di-rollback** memakai extended protocol, sehingga lebih dari satu statement atau `COMMIT` tersembunyi ditolak driver. Eksekusi sungguhan juga harus lewat approval semua leader. |
+| `go/log-injection` (5 temuan) | 7.8 (high) | `internal/dbmanager/logged.go:130, 152, 157, 167, 182` | Penyerang memalsukan baris log dengan menyisipkan newline. | False positive | Log SQL (query dan parameter) wajib dicatat menurut spek. Semua log ditulis oleh `slog` JSON handler (`cmd/server/main.go:30`), yang meng-escape newline dan tanda kutip di dalam string JSON, jadi input user tidak bisa membuat record log baru. Sudah diuji: query berisi `\n{"level":"ERROR",...}` tetap tercatat sebagai satu nilai string. Parameter SQL juga disamarkan `obs.RedactArgs`. |
+| `go/log-injection` | 7.8 (high) | `internal/approval/store.go:340` | Sama seperti di atas. | False positive | Atribut yang dicatat hanya ID numerik (`int64`) dan status dari konstanta internal; tidak ada teks bebas dari user, dan log tetap melalui JSON handler yang sama. |
+| `go/clear-text-logging` (3 temuan) | 7.5 (high) | `internal/httpx/middleware.go:158, 160, 162` | Data sensitif dari header HTTP tercatat di log. | False positive | Satu-satunya nilai dari header yang dicatat log request adalah `correlation_id` (`X-Request-ID`/`X-Correlation-ID`), yang hanya diterima jika berisi huruf, angka, `-`, `_`, `.` dan maksimal 64 karakter (`validRequestID`), selain itu diganti ID acak. Atribut lain adalah `actor` (username, bukan credential), method, path, status, dan durasi. Cookie session, token CSRF, dan password tidak pernah dicatat; handler log juga menyamarkan key seperti `session`, `token`, `csrf`, `password`, `cookie`, dan `authorization`. |
+
+Tidak ada temuan yang perlu diperbaiki di kode. Hasil bersih tidak berarti
+aplikasi pasti aman: CodeQL tidak menguji logika otorisasi, yang dicakup oleh
+integration test akses (alur berhasil, gagal, dan penolakan akses).
