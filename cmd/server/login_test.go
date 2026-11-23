@@ -106,6 +106,7 @@ func newHandlerWith(t *testing.T, db *sql.DB, pools dbmanager.Manager) http.Hand
 		Approvals:     &approval.Store{DB: db, Queue: queueStore, Guard: approval.DefaultGuard(migrations), Authz: az},
 		Jobs:          queueStore,
 		DirectExecute: true,
+		LegacyHTML:    true,
 	}
 	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware, sessions.CSRFMiddleware)
 }
