@@ -57,6 +57,8 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/databases/{dbID}", adminWrite("admin.connection.delete", app.apiAdminDeleteConnection))
 	mux.Handle("POST /api/admin/databases/{dbID}/test", adminWrite("admin.connection.test", app.apiAdminTestConnection))
 
+	mux.Handle("GET /api/databases/{dbID}/migrations",
+		dbRead(authz.ActionViewMigrations, app.apiListMigrations))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/requests",
 		dbWrite(authz.ActionRequestChange, "change.create", app.apiCreateChange))
 	mux.Handle("GET /api/databases/{dbID}/requests",
