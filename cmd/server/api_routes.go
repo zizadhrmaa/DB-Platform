@@ -59,6 +59,14 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/databases/{dbID}/migrations",
 		dbRead(authz.ActionViewMigrations, app.apiListMigrations))
+	mux.Handle("POST /api/databases/{dbID}/migrations",
+		dbWrite(authz.ActionCreateMigration, "migration.create", app.apiCreateMigration))
+	mux.Handle("GET /api/databases/{dbID}/migrations/{migrationID}",
+		dbRead(authz.ActionViewMigrations, app.apiGetMigration))
+	mux.Handle("PATCH /api/databases/{dbID}/migrations/{migrationID}",
+		dbWrite(authz.ActionEditMigration, "migration.update", app.apiUpdateMigration))
+	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/discard",
+		dbWrite(authz.ActionEditMigration, "migration.discard", app.apiDiscardMigration))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/requests",
 		dbWrite(authz.ActionRequestChange, "change.create", app.apiCreateChange))
 	mux.Handle("GET /api/databases/{dbID}/requests",
@@ -86,5 +94,5 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/revert",
 		dbWrite(authz.ActionManageJob, "job.revert", apiNotImplemented("Revert job")))
 	mux.Handle("GET /api/databases/{dbID}/history",
-		dbRead(authz.ActionViewHistory, apiNotImplemented("Riwayat migration")))
+		dbRead(authz.ActionViewHistory, app.apiHistory))
 }
