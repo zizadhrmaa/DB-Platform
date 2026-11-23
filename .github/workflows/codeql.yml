@@ -32,12 +32,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
           output: sarif-results
@@ -52,24 +52,35 @@ jobs:
           rows = []
           for path in glob.glob("sarif-results/*.sarif"):
               run = json.load(open(path))["runs"][0]
-              rules = {r["id"]: r for r in run["tool"]["driver"].get("rules", [])}
+              # Metadata rule ada di driver atau di extensions (query pack).
+              rules = {}
+              for comp in [run["tool"]["driver"]] + run["tool"].get("extensions", []):
+                  for r in comp.get("rules", []):
+                      rules[r["id"]] = r
               files = run.get("artifacts", [])
+              def where(loc):
+                  p = loc["physicalLocation"]
+                  a = p["artifactLocation"]
+                  uri = a.get("uri") or files[a["index"]]["location"]["uri"]
+                  return uri, p.get("region", {}).get("startLine", 1)
               for res in run.get("results", []):
-                  rule = rules.get(res["ruleId"], {})
-                  props = rule.get("properties", {})
-                  sev = props.get("security-severity") or props.get("problem.severity") or res.get("level", "")
-                  loc = res["locations"][0]["physicalLocation"]
-                  uri = loc["artifactLocation"].get("uri") or files[loc["artifactLocation"]["index"]]["location"]["uri"]
-                  line = loc.get("region", {}).get("startLine", 1)
+                  props = rules.get(res["ruleId"], {}).get("properties", {})
+                  sev = props.get("security-severity", "-")
+                  level = res.get("level") or rules.get(res["ruleId"], {}).get("defaultConfiguration", {}).get("level", "")
+                  uri, line = where(res["locations"][0])
+                  # Sumber data (nilai dari user) yang dirujuk pesan sebagai [..](n).
+                  sources = ", ".join(f"{u}:{l}" for u, l in (where(r) for r in res.get("relatedLocations", [])))
                   msg = res["message"]["text"].replace("\n", " ")
-                  rows.append((res["ruleId"], str(sev), uri, line, msg))
-                  print(f"::warning file={uri},line={line},title=CodeQL {res['ruleId']} (severity {sev})::{msg[:500]}")
+                  if sources:
+                      msg += f" Sumber: {sources}"
+                  rows.append((res["ruleId"], f"{sev} ({level})", uri, line, msg))
+                  print(f"::warning file={uri},line={line},title=CodeQL {res['ruleId']} (security-severity {sev}, {level})::{msg[:900]}")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
               out.write(f"### CodeQL ${{ matrix.language }}: {len(rows)} temuan\n\n")
               if rows:
                   out.write("| Rule | Severity | Lokasi | Pesan |\n|---|---|---|---|\n")
                   for r in rows:
-                      out.write(f"| {r[0]} | {r[1]} | {r[2]}:{r[3]} | {r[4][:200]} |\n")
+                      out.write(f"| {r[0]} | {r[1]} | {r[2]}:{r[3]} | {r[4][:400]} |\n")
           print(f"{len(rows)} temuan")
           EOF
       - uses: actions/upload-artifact@v4
