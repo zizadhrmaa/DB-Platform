@@ -53,12 +53,12 @@ func beginUserTx(ctx context.Context, target *sql.DB) (*sql.Tx, func(), error) {
 	return tx, release, nil
 }
 
-const columns = `m.id, m.db_id, m.version, m.title, m.sql_text, m.status, COALESCE(creator.username,''),m.created_at,m.updated_at,COALESCE(executor.username,''),m.executed_at,m.finished_at,COALESCE(m.error_message,'')`
+const columns = `m.id, m.db_id, m.version, m.revision, m.title, m.sql_text, COALESCE(m.sql_down,''), m.irreversible, COALESCE(m.irreversible_reason,''), m.status, COALESCE(creator.username,''),m.created_at,m.updated_at,COALESCE(executor.username,''),m.executed_at,m.finished_at,COALESCE(m.error_message,'')`
 const joins = ` FROM migrations m LEFT JOIN users creator ON creator.id=m.created_by LEFT JOIN users executor ON executor.id=m.executed_by `
 
 func scan(s interface{ Scan(...any) error }) (*Migration, error) {
 	var m Migration
-	err := s.Scan(&m.ID, &m.DBID, &m.Version, &m.Title, &m.SQL, &m.Status, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt, &m.ExecutedBy, &m.ExecutedAt, &m.FinishedAt, &m.ErrorMessage)
+	err := s.Scan(&m.ID, &m.DBID, &m.Version, &m.Revision, &m.Title, &m.SQL, &m.SQLDown, &m.Irreversible, &m.IrreversibleReason, &m.Status, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt, &m.ExecutedBy, &m.ExecutedAt, &m.FinishedAt, &m.ErrorMessage)
 	return &m, err
 }
 func (s *Store) List(ctx context.Context, dbID int64) ([]Migration, error) {
@@ -88,30 +88,43 @@ func (s *Store) Runs(ctx context.Context, dbID, id int64) ([]Run, error) {
 	if _, e := s.Get(ctx, dbID, id); e != nil {
 		return nil, e
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT r.id,r.migration_id,r.sql_text,COALESCE(u.username,''),r.started_at,r.finished_at,r.status,COALESCE(r.error_message,'') FROM migration_runs r JOIN migrations m ON m.id=r.migration_id LEFT JOIN users u ON u.id=r.executed_by WHERE m.db_id=$1 AND r.migration_id=$2 ORDER BY r.started_at DESC,r.id DESC`, dbID, id)
+	rows, e := s.DB.QueryContext(ctx, `SELECT `+runColumns+` FROM migration_runs r JOIN migrations m ON m.id=r.migration_id LEFT JOIN users u ON u.id=r.executed_by WHERE m.db_id=$1 AND r.migration_id=$2 ORDER BY r.started_at DESC,r.id DESC`, dbID, id)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
 	out := []Run{}
 	for rows.Next() {
-		var r Run
-		if e = rows.Scan(&r.ID, &r.MigrationID, &r.SQL, &r.ExecutedBy, &r.StartedAt, &r.FinishedAt, &r.Status, &r.ErrorMessage); e != nil {
+		r, e := scanRun(rows)
+		if e != nil {
 			return nil, e
 		}
-		out = append(out, r)
+		out = append(out, *r)
 	}
 	return out, rows.Err()
 }
+
+// legacyIrreversibleReason dipakai migration yang dibuat lewat halaman lama,
+// yang tidak punya kolom SQL down.
+const legacyIrreversibleReason = "Dibuat lewat halaman lama tanpa SQL down."
+
+// Create dipakai halaman lama. Karena tidak ada SQL down, migration
+// ditandai irreversible.
 func (s *Store) Create(ctx context.Context, u *domain.User, dbID int64, title, sqlText string) (*Migration, error) {
+	return s.CreateDraft(ctx, u, dbID, Draft{Title: title, SQLUp: sqlText, Irreversible: true, IrreversibleReason: legacyIrreversibleReason})
+}
+
+// CreateDraft menghitung versi baru (max+1) di dalam transaction yang
+// mengunci baris db_connections.
+func (s *Store) CreateDraft(ctx context.Context, u *domain.User, dbID int64, d Draft) (*Migration, error) {
 	if u == nil {
 		return nil, domain.ErrUnauthenticated
 	}
-	title = strings.TrimSpace(title)
-	if dbID <= 0 || title == "" {
+	d.normalize()
+	if dbID <= 0 {
 		return nil, domain.ErrInvalidInput
 	}
-	if e := ValidateSQL(sqlText); e != nil {
+	if e := d.validate(); e != nil {
 		return nil, e
 	}
 	tx, e := s.DB.BeginTx(ctx, nil)
@@ -133,7 +146,10 @@ func (s *Store) Create(ctx context.Context, u *domain.User, dbID int64, title, s
 		return nil, e
 	}
 	var id int64
-	e = tx.QueryRowContext(ctx, `INSERT INTO migrations(db_id,version,title,sql_text,status,created_by) VALUES($1,$2,$3,$4,'pending',$5) RETURNING id`, dbID, v, title, sqlText, u.ID).Scan(&id)
+	e = tx.QueryRowContext(ctx, `
+		INSERT INTO migrations(db_id,version,title,sql_text,sql_down,irreversible,irreversible_reason,status,created_by)
+		VALUES($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),'pending',$8) RETURNING id`,
+		dbID, v, d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID).Scan(&id)
 	if e != nil {
 		return nil, e
 	}
@@ -142,20 +158,46 @@ func (s *Store) Create(ctx context.Context, u *domain.User, dbID int64, title, s
 	}
 	return s.Get(ctx, dbID, id)
 }
+
+// Update dipakai halaman lama: hanya judul dan SQL up yang diubah, SQL down
+// dan tanda irreversible tetap seperti sebelumnya.
 func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, title, sqlText string) error {
 	if u == nil {
 		return domain.ErrUnauthenticated
 	}
-	title = strings.TrimSpace(title)
-	if title == "" || id <= 0 || dbID <= 0 {
+	if strings.TrimSpace(title) == "" || id <= 0 || dbID <= 0 {
 		return domain.ErrInvalidInput
 	}
-	if e := ValidateSQL(sqlText); e != nil {
+	m, e := s.Get(ctx, dbID, id)
+	if e != nil {
+		return e
+	}
+	return s.UpdateDraft(ctx, u, dbID, id, Draft{
+		Title: title, SQLUp: sqlText, SQLDown: m.SQLDown,
+		Irreversible: m.Irreversible, IrreversibleReason: m.IrreversibleReason,
+	})
+}
+
+// UpdateDraft hanya untuk migration pending atau failed yang belum masuk
+// request perubahan atau antrean. SQL yang pernah dieksekusi sampai sukses
+// tidak pernah bisa diubah; perbaikannya lewat migration baru. Setiap
+// perubahan menaikkan revisi, dan setiap attempt mencatat revisi serta
+// salinan SQL yang dijalankan.
+func (s *Store) UpdateDraft(ctx context.Context, u *domain.User, dbID, id int64, d Draft) error {
+	if u == nil {
+		return domain.ErrUnauthenticated
+	}
+	d.normalize()
+	if id <= 0 || dbID <= 0 {
+		return domain.ErrInvalidInput
+	}
+	if e := d.validate(); e != nil {
 		return e
 	}
 	r, e := s.DB.ExecContext(ctx, `
-		UPDATE migrations SET title=$1, sql_text=$2, updated_by=$3, updated_at=now(), revision=revision+1
-		WHERE id=$4 AND db_id=$5 AND status IN ('pending','failed')
+		UPDATE migrations SET title=$1, sql_text=$2, sql_down=NULLIF($3,''), irreversible=$4,
+		       irreversible_reason=NULLIF($5,''), updated_by=$6, updated_at=now(), revision=revision+1
+		WHERE id=$7 AND db_id=$8 AND status IN ('pending','failed')
 		  AND NOT EXISTS (
 			SELECT 1 FROM change_requests c
 			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved'))
@@ -163,7 +205,7 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 			SELECT 1 FROM jobs j
 			WHERE j.migration_id = migrations.id
 			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`,
-		title, sqlText, u.ID, id, dbID)
+		d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID, id, dbID)
 	if e != nil {
 		return e
 	}
@@ -189,7 +231,7 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 	}
 	r, e := s.DB.ExecContext(ctx, `
 		UPDATE migrations SET status='discarded', updated_by=$1, updated_at=now()
-		WHERE id=$2 AND db_id=$3 AND status IN ('pending','failed')
+		WHERE id=$2 AND db_id=$3 AND status IN ('pending','failed','rolled_back')
 		  AND NOT EXISTS (
 			SELECT 1 FROM change_requests c
 			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved','queued'))
@@ -216,6 +258,10 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 
 // Error hasil eksekusi yang perlu dibedakan worker. Masing-masing
 // membungkus error domain supaya httpx.StatusFor tetap bisa memetakannya.
+// errNotApplied: rollback ditolak karena versi tidak tercatat aktif di
+// database target, misalnya sudah di-rollback di luar platform.
+var errNotApplied = errors.New("versi migration tidak tercatat aktif di database target, rollback dibatalkan")
+
 var (
 	// ErrTargetBusy: lock eksekusi di database target sedang dipegang.
 	// Belum ada attempt yang tercatat, jadi aman dicoba lagi.
@@ -232,6 +278,8 @@ var (
 
 // ExecOptions mengatur eksekusi yang dijalankan worker.
 type ExecOptions struct {
+	// Kind adalah jenis eksekusi; kosong berarti up.
+	Kind Kind
 	// Timeout seluruh eksekusi, juga dipakai sebagai statement_timeout.
 	// 0 berarti 90 detik dengan statement_timeout 60 detik (perilaku lama).
 	Timeout time.Duration
@@ -330,7 +378,11 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 		return nil, e
 	}
 
-	sqlText, version, runID, e := s.start(work, u, dbID, id, opt.OnStart)
+	kind := opt.Kind
+	if kind == "" {
+		kind = KindUp
+	}
+	sqlText, version, runID, e := s.start(work, u, dbID, id, kind, opt.OnStart)
 	if e != nil {
 		return nil, e
 	}
@@ -338,7 +390,7 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 	jc := obs.JobContext{ExecutionID: runID, MigrationID: id}
 	base, work = obs.WithJobContext(base, jc), obs.WithJobContext(work, jc)
 	slog.InfoContext(work, "attempt migration dimulai", "event", "migration.attempt_start",
-		"db_id", dbID, "version", version, "user", u.Username, "sql", sqlText)
+		"db_id", dbID, "version", version, "kind", kind, "user", u.Username, "sql", sqlText)
 
 	// Pencatatan hasil memakai context sendiri: work bisa saja sudah habis
 	// karena timeout eksekusi.
@@ -354,11 +406,30 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 			historyTableSQL = `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INT PRIMARY KEY,applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`
 			insertSQL = `INSERT INTO _dbplatform_history(version) VALUES(?)`
 		}
-		if _, e := ltx.ExecContext(work, historyTableSQL); e != nil {
-			return e
-		}
-		if _, e := ltx.ExecContext(work, insertSQL, version); e != nil {
-			return e
+		// _dbplatform_history berisi versi yang sedang aktif di target dan
+		// ditulis dalam transaction yang sama dengan SQL migration, jadi
+		// menjadi bukti commit. up/forward menambah versi (primary key
+		// mencegah penerapan ganda); rollback menghapusnya dan harus tepat
+		// satu baris (mencegah rollback ganda).
+		if kind == KindRollback {
+			deleteSQL := `DELETE FROM _dbplatform_history WHERE version=$1`
+			if isMy {
+				deleteSQL = `DELETE FROM _dbplatform_history WHERE version=?`
+			}
+			res, e := ltx.ExecContext(work, deleteSQL, version)
+			if e != nil {
+				return e
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return errNotApplied
+			}
+		} else {
+			if _, e := ltx.ExecContext(work, historyTableSQL); e != nil {
+				return e
+			}
+			if _, e := ltx.ExecContext(work, insertSQL, version); e != nil {
+				return e
+			}
 		}
 		_, e := ltx.ExecContext(work, sqlText)
 		return e
@@ -374,7 +445,7 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 	case execErr == nil && commitErr == nil:
 		return s.finishRun(book, id, dbID, runID, StatusSuccess, "", nil)
 	case execErr != nil:
-		if serverRejected(execErr) || errors.Is(execErr, context.DeadlineExceeded) {
+		if serverRejected(execErr) || errors.Is(execErr, context.DeadlineExceeded) || errors.Is(execErr, errNotApplied) {
 			return s.finishRun(book, id, dbID, runID, StatusFailed, errorMessage(execErr), nil)
 		}
 		// Koneksi putus sebelum COMMIT: transaction pasti batal.
@@ -466,25 +537,74 @@ func (s *Store) finishRun(ctx context.Context, id, dbID, runID int64, status Sta
 	return run, result
 }
 
-func (s *Store) runByID(ctx context.Context, migrationID, runID int64) (*Run, error) {
+const runColumns = `r.id,r.migration_id,r.kind,r.revision,r.reverts_run_id,r.sql_text,COALESCE(u.username,''),r.started_at,r.finished_at,r.status,COALESCE(r.error_message,'')`
+
+func scanRun(s interface{ Scan(...any) error }) (*Run, error) {
 	var r Run
-	err := s.DB.QueryRowContext(ctx, `
-		SELECT r.id,r.migration_id,r.sql_text,COALESCE(u.username,''),r.started_at,r.finished_at,r.status,COALESCE(r.error_message,'')
-		FROM migration_runs r LEFT JOIN users u ON u.id=r.executed_by
-		WHERE r.id=$1 AND r.migration_id=$2`, runID, migrationID).
-		Scan(&r.ID, &r.MigrationID, &r.SQL, &r.ExecutedBy, &r.StartedAt, &r.FinishedAt, &r.Status, &r.ErrorMessage)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, domain.ErrNotFound
-	}
-	if err != nil {
-		return nil, err
+	if e := s.Scan(&r.ID, &r.MigrationID, &r.Kind, &r.Revision, &r.RevertsRunID, &r.SQL, &r.ExecutedBy, &r.StartedAt, &r.FinishedAt, &r.Status, &r.ErrorMessage); e != nil {
+		return nil, e
 	}
 	return &r, nil
 }
 
-// start mengunci migration database ini, memastikan id adalah giliran
-// berikutnya, lalu menandainya running.
-func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, onStart func(context.Context, *sql.Tx, int64) error) (string, int, int64, error) {
+func (s *Store) runByID(ctx context.Context, migrationID, runID int64) (*Run, error) {
+	r, err := scanRun(s.DB.QueryRowContext(ctx, `SELECT `+runColumns+`
+		FROM migration_runs r LEFT JOIN users u ON u.id=r.executed_by
+		WHERE r.id=$1 AND r.migration_id=$2`, runID, migrationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return r, err
+}
+
+// History mengembalikan riwayat eksekusi database, urut waktu mulai.
+// Eksekusi committed diambil dari migration_history (tidak bisa diubah),
+// attempt yang gagal dari migration_runs supaya kegagalan tetap terlihat.
+// Dengan hideRollback, pasangan eksekusi yang dibatalkan dan rollback
+// suksesnya disembunyikan; datanya sendiri tidak berubah.
+func (s *Store) History(ctx context.Context, dbID int64, hideRollback bool) ([]HistoryEntry, error) {
+	rows, e := s.DB.QueryContext(ctx, `
+		SELECT h.execution_id, h.migration_id, h.version, h.revision, h.title, h.kind, 'success',
+		       h.sql_text, h.executed_by_username, h.started_at, h.committed_at, h.reverts_execution_id, ''
+		FROM migration_history h
+		WHERE h.db_id = $1
+		UNION ALL
+		SELECT r.id, m.id, m.version, r.revision, m.title, r.kind, r.status,
+		       r.sql_text, COALESCE(u.username,''), r.started_at, r.finished_at, r.reverts_run_id,
+		       COALESCE(r.error_message,'')
+		FROM migration_runs r
+		JOIN migrations m ON m.id = r.migration_id
+		LEFT JOIN users u ON u.id = r.executed_by
+		WHERE m.db_id = $1 AND r.status = 'failed'
+		ORDER BY 10, 1`, dbID)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []HistoryEntry{}
+	for rows.Next() {
+		var h HistoryEntry
+		if e := rows.Scan(&h.ExecutionID, &h.MigrationID, &h.Version, &h.Revision, &h.Title, &h.Kind, &h.Status,
+			&h.SQL, &h.ExecutedBy, &h.StartedAt, &h.FinishedAt, &h.RevertsExecutionID, &h.ErrorMessage); e != nil {
+			return nil, e
+		}
+		out = append(out, h)
+	}
+	if e := rows.Err(); e != nil {
+		return nil, e
+	}
+	if hideRollback {
+		out = HideRolledBack(out)
+	}
+	return out, nil
+}
+
+// start mengunci migration database ini, memastikan id boleh dieksekusi
+// dengan jenis kind, lalu menandainya running dan mencatat attempt beserta
+// salinan SQL dan revisinya. Untuk rollback, SQL yang dijalankan adalah SQL
+// down migration itu (tidak bisa diubah setelah dieksekusi), dan attempt
+// merujuk eksekusi up/forward yang dibatalkan.
+func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, kind Kind, onStart func(context.Context, *sql.Tx, int64) error) (string, int, int64, error) {
 	platformTx, e := s.DB.BeginTx(work, nil)
 	if e != nil {
 		return "", 0, 0, e
@@ -498,14 +618,14 @@ func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, onSt
 	if e != nil {
 		return "", 0, 0, e
 	}
-	rows, e := platformTx.QueryContext(work, `SELECT id,version,status FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
+	rows, e := platformTx.QueryContext(work, `SELECT id,version,status,irreversible,COALESCE(irreversible_reason,'') FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
 	if e != nil {
 		return "", 0, 0, e
 	}
 	list := []Migration{}
 	for rows.Next() {
 		var m Migration
-		if e = rows.Scan(&m.ID, &m.Version, &m.Status); e != nil {
+		if e = rows.Scan(&m.ID, &m.Version, &m.Status, &m.Irreversible, &m.IrreversibleReason); e != nil {
 			rows.Close()
 			return "", 0, 0, e
 		}
@@ -516,21 +636,40 @@ func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, onSt
 	if e != nil {
 		return "", 0, 0, e
 	}
-	if e = CheckExecutable(list, id); e != nil {
+	if e = CheckRunnable(list, id, kind); e != nil {
 		return "", 0, 0, e
 	}
-	var sqlText string
-	var version int
-	e = platformTx.QueryRowContext(work, `SELECT sql_text,version FROM migrations WHERE id=$1 AND db_id=$2`, id, dbID).Scan(&sqlText, &version)
+	var up, down string
+	var version, revision int
+	e = platformTx.QueryRowContext(work, `SELECT sql_text,COALESCE(sql_down,''),version,revision FROM migrations WHERE id=$1 AND db_id=$2`, id, dbID).Scan(&up, &down, &version, &revision)
 	if e != nil {
 		return "", 0, 0, e
+	}
+	sqlText := up
+	var reverts *int64
+	if kind == KindRollback {
+		sqlText = down
+		var rid int64
+		e = platformTx.QueryRowContext(work, `
+			SELECT id FROM migration_runs
+			WHERE migration_id=$1 AND status='success' AND kind IN ('up','forward')
+			ORDER BY id DESC LIMIT 1`, id).Scan(&rid)
+		if errors.Is(e, sql.ErrNoRows) {
+			return "", 0, 0, fmt.Errorf("%w: eksekusi yang akan di-rollback tidak ditemukan", domain.ErrConflict)
+		}
+		if e != nil {
+			return "", 0, 0, e
+		}
+		reverts = &rid
 	}
 	_, e = platformTx.ExecContext(work, `UPDATE migrations SET status='running',executed_by=$1,executed_at=now(),finished_at=NULL,error_message=NULL WHERE id=$2 AND db_id=$3`, u.ID, id, dbID)
 	if e != nil {
 		return "", 0, 0, e
 	}
 	var runID int64
-	e = platformTx.QueryRowContext(work, `INSERT INTO migration_runs(migration_id,sql_text,executed_by,status) VALUES($1,$2,$3,'running') RETURNING id`, id, sqlText, u.ID).Scan(&runID)
+	e = platformTx.QueryRowContext(work, `
+		INSERT INTO migration_runs(migration_id,kind,revision,reverts_run_id,sql_text,executed_by,status)
+		VALUES($1,$2,$3,$4,$5,$6,'running') RETURNING id`, id, kind, revision, reverts, sqlText, u.ID).Scan(&runID)
 	if e != nil {
 		return "", 0, 0, e
 	}
@@ -542,26 +681,63 @@ func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, onSt
 	return sqlText, version, runID, platformTx.Commit()
 }
 
-func (s *Store) finish(work context.Context, id, dbID, runID int64, status Status, message string) error {
-	finishTx, e := s.DB.BeginTx(work, nil)
+// finish menulis hasil attempt runID. result adalah hasil attempt (success
+// atau failed); status migration diturunkan dari jenis eksekusinya.
+func (s *Store) finish(work context.Context, id, dbID, runID int64, result Status, message string) error {
+	tx, e := s.DB.BeginTx(work, nil)
 	if e != nil {
 		return e
 	}
-	defer finishTx.Rollback()
-	_, e = finishTx.ExecContext(work, `UPDATE migrations SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND db_id=$4`, status, message, id, dbID)
+	defer tx.Rollback()
+	if e = settle(work, tx, id, dbID, runID, result, message); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+// settle mengubah attempt yang masih running menjadi result, status
+// migration sesuai jenis eksekusi, dan untuk attempt yang committed
+// menambah migration_history dalam transaction yang sama. Attempt yang
+// sudah tidak running (sudah dibereskan pemulihan) tidak diubah lagi.
+func settle(ctx context.Context, tx *sql.Tx, id, dbID, runID int64, result Status, message string) error {
+	var kind Kind
+	e := tx.QueryRowContext(ctx, `SELECT kind FROM migration_runs WHERE id=$1 AND migration_id=$2 FOR UPDATE`, runID, id).Scan(&kind)
 	if e != nil {
 		return e
 	}
-	_, e = finishTx.ExecContext(work, `UPDATE migration_runs SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND migration_id=$4`, status, message, runID, id)
+	r, e := tx.ExecContext(ctx, `UPDATE migration_runs SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND status='running'`, result, message, runID)
 	if e != nil {
 		return e
 	}
-	return finishTx.Commit()
+	if n, _ := r.RowsAffected(); n == 0 {
+		return nil
+	}
+	_, e = tx.ExecContext(ctx, `UPDATE migrations SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND db_id=$4 AND status='running'`,
+		migrationStatusAfter(kind, result), message, id, dbID)
+	if e != nil {
+		return e
+	}
+	if result != StatusSuccess {
+		return nil
+	}
+	_, e = tx.ExecContext(ctx, `
+		INSERT INTO migration_history (execution_id, db_id, migration_id, version, revision, title, kind,
+		                               sql_text, executed_by, executed_by_username, started_at, reverts_execution_id)
+		SELECT r.id, m.db_id, m.id, m.version, r.revision, m.title, r.kind,
+		       r.sql_text, r.executed_by, COALESCE(u.username,''), r.started_at, r.reverts_run_id
+		FROM migration_runs r
+		JOIN migrations m ON m.id = r.migration_id
+		LEFT JOIN users u ON u.id = r.executed_by
+		WHERE r.id = $1`, runID)
+	return e
 }
 
 // errorMessage mengambil pesan error PostgreSQL. Error lain, misalnya
 // koneksi putus, diganti pesan umum supaya detail koneksi tidak tersimpan.
 func errorMessage(e error) string {
+	if errors.Is(e, errNotApplied) {
+		return "Versi migration tidak tercatat aktif di database target, jadi rollback dibatalkan."
+	}
 	var me *mysql.MySQLError
 	if errors.As(e, &me) {
 		return fmt.Sprintf("MySQL Error %d: %s", me.Number, me.Message)

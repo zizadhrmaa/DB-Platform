@@ -102,7 +102,7 @@ func TestWorkerRejectsUnsupportedJobs(t *testing.T) {
 	for _, p := range []struct {
 		kind queue.Kind
 		mode queue.Mode
-	}{{queue.KindRollback, queue.ModeNormal}, {queue.KindUp, queue.ModeBatch}} {
+	}{{queue.KindUp, queue.ModeBatch}} {
 		t.Run(string(p.kind)+"-"+string(p.mode), func(t *testing.T) {
 			e := setup(t)
 			m, err := e.migs.Create(context.Background(), e.user, e.dbA, "m", "SELECT 1")

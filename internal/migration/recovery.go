@@ -172,19 +172,32 @@ func (s *Store) recoverDB(ctx context.Context, dbID int64) error {
 	return s.reconcile(ctx, tx, dbID, isMy)
 }
 
+// reconcile membereskan migration yang tertinggal running di database ini
+// memakai bukti di target. Harus dipanggil saat lock target dipegang, jadi
+// tidak ada transaction lain yang sedang mengubah bukti.
+//
+// _dbplatform_history berisi versi yang sedang aktif. Attempt up/forward
+// dianggap committed kalau versinya ada; attempt rollback dianggap
+// committed kalau versinya sudah tidak ada.
 func (s *Store) reconcile(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL bool) error {
-	rows, e := s.DB.QueryContext(ctx, `SELECT id,version FROM migrations WHERE db_id=$1 AND status='running'`, dbID)
+	rows, e := s.DB.QueryContext(ctx, `
+		SELECT m.id, m.version, r.id, COALESCE(r.kind, 'up')
+		FROM migrations m
+		LEFT JOIN migration_runs r ON r.migration_id = m.id AND r.status = 'running'
+		WHERE m.db_id = $1 AND m.status = 'running'`, dbID)
 	if e != nil {
 		return e
 	}
 	type stuck struct {
 		id      int64
 		version int
+		runID   sql.NullInt64
+		kind    Kind
 	}
 	var items []stuck
 	for rows.Next() {
 		var it stuck
-		if e = rows.Scan(&it.id, &it.version); e != nil {
+		if e = rows.Scan(&it.id, &it.version, &it.runID, &it.kind); e != nil {
 			rows.Close()
 			return e
 		}
@@ -210,41 +223,50 @@ func (s *Store) reconcile(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL b
 	}
 
 	for _, it := range items {
-		applied := false
+		present := false
 		if hasHistory {
 			checkSQL := `SELECT EXISTS (SELECT 1 FROM _dbplatform_history WHERE version=$1)`
 			if isMySQL {
 				checkSQL = `SELECT EXISTS (SELECT 1 FROM _dbplatform_history WHERE version=?)`
 			}
-			if e = tx.QueryRowContext(ctx, checkSQL, it.version).Scan(&applied); e != nil {
+			if e = tx.QueryRowContext(ctx, checkSQL, it.version).Scan(&present); e != nil {
 				return dbmanager.SanitizeError(e)
 			}
 		}
-		status, message := StatusFailed, interruptedMessage
-		if applied {
-			status, message = StatusSuccess, ""
+		applied := present
+		if it.kind == KindRollback {
+			applied = hasHistory && !present
 		}
-		if e = s.finishInterrupted(ctx, it.id, dbID, status, message); e != nil {
+		result, message := StatusFailed, interruptedMessage
+		if applied {
+			result, message = StatusSuccess, ""
+		}
+		if e = s.finishInterrupted(ctx, it.id, dbID, it.runID, result, message); e != nil {
 			return e
 		}
-		slog.Warn("migration yang terputus dibereskan", "migration_id", it.id, "status", status)
+		slog.WarnContext(ctx, "migration yang terputus dibereskan", "event", "migration.reconciled",
+			"migration_id", it.id, "kind", it.kind, "result", result)
 	}
 	return nil
 }
 
-func (s *Store) finishInterrupted(ctx context.Context, id, dbID int64, status Status, message string) error {
+func (s *Store) finishInterrupted(ctx context.Context, id, dbID int64, runID sql.NullInt64, result Status, message string) error {
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	_, e = tx.ExecContext(ctx, `UPDATE migrations SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND db_id=$4 AND status='running'`, status, message, id, dbID)
-	if e != nil {
-		return e
-	}
-	_, e = tx.ExecContext(ctx, `UPDATE migration_runs SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE migration_id=$3 AND status='running'`, status, message, id)
-	if e != nil {
-		return e
+	if runID.Valid {
+		if e = settle(ctx, tx, id, dbID, runID.Int64, result, message); e != nil {
+			return e
+		}
+	} else {
+		// Migration running tanpa attempt tercatat (data lama): perlakukan
+		// sebagai up.
+		_, e = tx.ExecContext(ctx, `UPDATE migrations SET status=$1,finished_at=now(),error_message=NULLIF($2,'') WHERE id=$3 AND db_id=$4 AND status='running'`, result, message, id, dbID)
+		if e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }
