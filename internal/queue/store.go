@@ -24,14 +24,14 @@ type Execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-const jobColumns = `id, db_id, migration_id, request_id, kind, mode, status, idempotency_key,
+const jobColumns = `id, db_id, migration_id, request_id, kind, mode, action, status, idempotency_key,
 	requested_by, attempt, max_attempts, next_run_at, COALESCE(lease_owner,''), lease_until, run_id,
 	COALESCE(trace_context,''), batches_committed, rows_committed, COALESCE(last_cursor,''),
 	COALESCE(error_message,''), created_at, started_at, finished_at, updated_at`
 
 func scanJob(s interface{ Scan(...any) error }) (*Job, error) {
 	var j Job
-	err := s.Scan(&j.ID, &j.DBID, &j.MigrationID, &j.RequestID, &j.Kind, &j.Mode, &j.Status, &j.IdempotencyKey,
+	err := s.Scan(&j.ID, &j.DBID, &j.MigrationID, &j.RequestID, &j.Kind, &j.Mode, &j.Action, &j.Status, &j.IdempotencyKey,
 		&j.RequestedBy, &j.Attempt, &j.MaxAttempts, &j.NextRunAt, &j.LeaseOwner, &j.LeaseUntil, &j.RunID,
 		&j.TraceContext, &j.BatchesCommitted, &j.RowsCommitted, &j.LastCursor,
 		&j.ErrorMessage, &j.CreatedAt, &j.StartedAt, &j.FinishedAt, &j.UpdatedAt)
@@ -204,7 +204,7 @@ func (s *Store) SetRun(ctx context.Context, ex Execer, id int64, owner string, r
 // finishable adalah status akhir attempt yang boleh ditulis worker.
 func finishable(st Status) bool {
 	switch st {
-	case StatusSucceeded, StatusFailed, StatusUncertain, StatusPartial, StatusPartiallyReverted:
+	case StatusSucceeded, StatusFailed, StatusUncertain, StatusPartial, StatusPartiallyReverted, StatusReverted:
 		return true
 	}
 	return false
@@ -219,7 +219,7 @@ func (s *Store) Finish(ctx context.Context, id int64, owner string, st Status, m
 	return expectOne(s.DB.ExecContext(ctx, `
 		UPDATE jobs SET status = $3, error_message = NULLIF($4,''),
 		       lease_owner = NULL, lease_until = NULL, updated_at = now(),
-		       finished_at = CASE WHEN $3 IN ('succeeded','failed') THEN now() END
+		       finished_at = CASE WHEN $3 IN ('succeeded','failed','reverted') THEN now() END
 		WHERE id = $1 AND lease_owner = $2 AND status = 'running'`, id, owner, st, message))
 }
 
@@ -269,6 +269,52 @@ func (s *Store) policy() RetryPolicy {
 		return DefaultRetryPolicy()
 	}
 	return s.Policy
+}
+
+// Progress mencatat kemajuan job batch milik owner. Nilainya mencerminkan
+// checkpoint di database target (sumber kebenaran), jadi boleh tertinggal
+// sedikit tetapi tidak pernah mendahului checkpoint.
+func (s *Store) Progress(ctx context.Context, id int64, owner string, batches int, rows int64, cursor string) error {
+	return expectOne(s.DB.ExecContext(ctx, `
+		UPDATE jobs SET batches_committed = $3, rows_committed = $4, last_cursor = NULLIF($5,''), updated_at = now()
+		WHERE id = $1 AND lease_owner = $2 AND status = 'running'`, id, owner, batches, rows, cursor))
+}
+
+// SetProgress dipakai pemulihan setelah membaca checkpoint di target untuk
+// job yang worker-nya mati.
+func (s *Store) SetProgress(ctx context.Context, id int64, batches int, rows int64, cursor string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE jobs SET batches_committed = $2, rows_committed = $3, last_cursor = NULLIF($4,''), updated_at = now()
+		WHERE id = $1`, id, batches, rows, cursor)
+	return err
+}
+
+// Reopen mengembalikan job batch yang berhenti di tengah ke antrean dengan
+// action baru: run untuk melanjutkan dari checkpoint, revert untuk
+// membatalkan batch yang sudah committed. Hanya job berstatus salah satu
+// dari from yang dibuka lagi. Jatah attempt dihitung ulang dari nol karena
+// ini tindakan baru dari user.
+func (s *Store) Reopen(ctx context.Context, dbID, id int64, from []Status, action Action) (*Job, error) {
+	if action != ActionRun && action != ActionRevert {
+		return nil, fmt.Errorf("%w: action job tidak dikenal", domain.ErrInvalidInput)
+	}
+	names := make([]string, 0, len(from))
+	for _, st := range from {
+		names = append(names, string(st))
+	}
+	j, err := scanJob(s.DB.QueryRowContext(ctx, `
+		UPDATE jobs SET status = 'queued', action = $3, attempt = 0, next_run_at = now(),
+		       error_message = NULL, finished_at = NULL, updated_at = now()
+		WHERE id = $1 AND db_id = $2 AND mode = 'batch' AND status = ANY($4)
+		RETURNING `+jobColumns, id, dbID, action, names))
+	if errors.Is(err, sql.ErrNoRows) {
+		cur, gerr := s.GetInDB(ctx, dbID, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		return nil, fmt.Errorf("%w: job berstatus %s (mode %s) tidak bisa dilanjutkan atau dibatalkan", domain.ErrConflict, cur.Status, cur.Mode)
+	}
+	return j, err
 }
 
 // Recoverable mengembalikan job yang perlu diperiksa pemulihan: running
@@ -341,7 +387,7 @@ func (s *Store) Resolve(ctx context.Context, id int64, from Expect, to Status, m
 		_, err = tx.ExecContext(ctx, `
 			UPDATE jobs SET status = $2, error_message = NULLIF($3,''),
 			       lease_owner = NULL, lease_until = NULL, updated_at = now(),
-			       finished_at = CASE WHEN $2 IN ('succeeded','failed') THEN now() END
+			       finished_at = CASE WHEN $2 IN ('succeeded','failed','reverted') THEN now() END
 			WHERE id = $1`, id, to, message)
 	}
 	if err != nil {

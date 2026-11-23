@@ -53,12 +53,12 @@ func beginUserTx(ctx context.Context, target *sql.DB) (*sql.Tx, func(), error) {
 	return tx, release, nil
 }
 
-const columns = `m.id, m.db_id, m.version, m.revision, m.title, m.sql_text, COALESCE(m.sql_down,''), m.irreversible, COALESCE(m.irreversible_reason,''), m.status, COALESCE(creator.username,''),m.created_at,m.updated_at,COALESCE(executor.username,''),m.executed_at,m.finished_at,COALESCE(m.error_message,'')`
+const columns = `m.id, m.db_id, m.version, m.revision, m.title, m.sql_text, COALESCE(m.sql_down,''), m.irreversible, COALESCE(m.irreversible_reason,''), m.exec_mode, COALESCE(m.batch_table,''), COALESCE(m.batch_column,''), COALESCE(m.batch_size,0), m.status, COALESCE(creator.username,''),m.created_at,m.updated_at,COALESCE(executor.username,''),m.executed_at,m.finished_at,COALESCE(m.error_message,'')`
 const joins = ` FROM migrations m LEFT JOIN users creator ON creator.id=m.created_by LEFT JOIN users executor ON executor.id=m.executed_by `
 
 func scan(s interface{ Scan(...any) error }) (*Migration, error) {
 	var m Migration
-	err := s.Scan(&m.ID, &m.DBID, &m.Version, &m.Revision, &m.Title, &m.SQL, &m.SQLDown, &m.Irreversible, &m.IrreversibleReason, &m.Status, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt, &m.ExecutedBy, &m.ExecutedAt, &m.FinishedAt, &m.ErrorMessage)
+	err := s.Scan(&m.ID, &m.DBID, &m.Version, &m.Revision, &m.Title, &m.SQL, &m.SQLDown, &m.Irreversible, &m.IrreversibleReason, &m.ExecMode, &m.BatchTable, &m.BatchColumn, &m.BatchSize, &m.Status, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt, &m.ExecutedBy, &m.ExecutedAt, &m.FinishedAt, &m.ErrorMessage)
 	return &m, err
 }
 func (s *Store) List(ctx context.Context, dbID int64) ([]Migration, error) {
@@ -147,9 +147,11 @@ func (s *Store) CreateDraft(ctx context.Context, u *domain.User, dbID int64, d D
 	}
 	var id int64
 	e = tx.QueryRowContext(ctx, `
-		INSERT INTO migrations(db_id,version,title,sql_text,sql_down,irreversible,irreversible_reason,status,created_by)
-		VALUES($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),'pending',$8) RETURNING id`,
-		dbID, v, d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID).Scan(&id)
+		INSERT INTO migrations(db_id,version,title,sql_text,sql_down,irreversible,irreversible_reason,status,created_by,
+		                       exec_mode,batch_table,batch_column,batch_size)
+		VALUES($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),'pending',$8,$9,NULLIF($10,''),NULLIF($11,''),NULLIF($12,0)) RETURNING id`,
+		dbID, v, d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID,
+		d.ExecMode, d.BatchTable, d.BatchColumn, d.BatchSize).Scan(&id)
 	if e != nil {
 		return nil, e
 	}
@@ -175,6 +177,7 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 	return s.UpdateDraft(ctx, u, dbID, id, Draft{
 		Title: title, SQLUp: sqlText, SQLDown: m.SQLDown,
 		Irreversible: m.Irreversible, IrreversibleReason: m.IrreversibleReason,
+		ExecMode: m.ExecMode, BatchTable: m.BatchTable, BatchColumn: m.BatchColumn, BatchSize: m.BatchSize,
 	})
 }
 
@@ -196,7 +199,8 @@ func (s *Store) UpdateDraft(ctx context.Context, u *domain.User, dbID, id int64,
 	}
 	r, e := s.DB.ExecContext(ctx, `
 		UPDATE migrations SET title=$1, sql_text=$2, sql_down=NULLIF($3,''), irreversible=$4,
-		       irreversible_reason=NULLIF($5,''), updated_by=$6, updated_at=now(), revision=revision+1
+		       irreversible_reason=NULLIF($5,''), updated_by=$6, updated_at=now(), revision=revision+1,
+		       exec_mode=$9, batch_table=NULLIF($10,''), batch_column=NULLIF($11,''), batch_size=NULLIF($12,0)
 		WHERE id=$7 AND db_id=$8 AND status IN ('pending','failed')
 		  AND NOT EXISTS (
 			SELECT 1 FROM change_requests c
@@ -205,7 +209,8 @@ func (s *Store) UpdateDraft(ctx context.Context, u *domain.User, dbID, id int64,
 			SELECT 1 FROM jobs j
 			WHERE j.migration_id = migrations.id
 			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`,
-		d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID, id, dbID)
+		d.Title, d.SQLUp, d.SQLDown, d.Irreversible, d.IrreversibleReason, u.ID, id, dbID,
+		d.ExecMode, d.BatchTable, d.BatchColumn, d.BatchSize)
 	if e != nil {
 		return e
 	}
@@ -618,14 +623,14 @@ func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, kind
 	if e != nil {
 		return "", 0, 0, e
 	}
-	rows, e := platformTx.QueryContext(work, `SELECT id,version,status,irreversible,COALESCE(irreversible_reason,'') FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
+	rows, e := platformTx.QueryContext(work, `SELECT id,version,status,irreversible,COALESCE(irreversible_reason,''),exec_mode FROM migrations WHERE db_id=$1 ORDER BY version FOR UPDATE`, dbID)
 	if e != nil {
 		return "", 0, 0, e
 	}
 	list := []Migration{}
 	for rows.Next() {
 		var m Migration
-		if e = rows.Scan(&m.ID, &m.Version, &m.Status, &m.Irreversible, &m.IrreversibleReason); e != nil {
+		if e = rows.Scan(&m.ID, &m.Version, &m.Status, &m.Irreversible, &m.IrreversibleReason, &m.ExecMode); e != nil {
 			rows.Close()
 			return "", 0, 0, e
 		}

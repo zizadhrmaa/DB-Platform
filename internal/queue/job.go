@@ -23,6 +23,7 @@ const (
 	StatusUncertain         Status = "uncertain"
 	StatusPartial           Status = "partial"
 	StatusPartiallyReverted Status = "partially_reverted"
+	StatusReverted          Status = "reverted" // mode batch: semua batch committed sudah dibatalkan
 )
 
 // holdingStatuses harus sama dengan predikat index jobs_one_active_per_db_uq.
@@ -34,14 +35,16 @@ const openStatuses = `('queued','running','uncertain','partial','partially_rever
 func (s Status) Valid() bool {
 	switch s {
 	case StatusQueued, StatusRunning, StatusSucceeded, StatusFailed,
-		StatusUncertain, StatusPartial, StatusPartiallyReverted:
+		StatusUncertain, StatusPartial, StatusPartiallyReverted, StatusReverted:
 		return true
 	}
 	return false
 }
 
 // Terminal berarti job tidak akan diproses lagi.
-func (s Status) Terminal() bool { return s == StatusSucceeded || s == StatusFailed }
+func (s Status) Terminal() bool {
+	return s == StatusSucceeded || s == StatusFailed || s == StatusReverted
+}
 
 // HoldsDatabase berarti job lain di database yang sama tidak boleh jalan.
 // Spesifikasi: tahan migration berikutnya selama hasil belum pasti atau
@@ -73,6 +76,15 @@ const (
 
 func (m Mode) Valid() bool { return m == ModeNormal || m == ModeBatch }
 
+// Action menentukan apa yang dikerjakan job batch: menjalankan batch dari
+// checkpoint, atau membatalkan batch yang sudah committed.
+type Action string
+
+const (
+	ActionRun    Action = "run"
+	ActionRevert Action = "revert"
+)
+
 // Job dikirim ke SPA apa adanya. Field yang hanya berguna di dalam sistem
 // (pemilik lease berisi hostname worker, kunci idempotensi, trace context)
 // sengaja tidak ikut di JSON.
@@ -83,6 +95,7 @@ type Job struct {
 	RequestID        *int64     `json:"request_id"`
 	Kind             Kind       `json:"kind"`
 	Mode             Mode       `json:"mode"`
+	Action           Action     `json:"action"`
 	Status           Status     `json:"status"`
 	IdempotencyKey   string     `json:"-"`
 	RequestedBy      *int64     `json:"requested_by"`

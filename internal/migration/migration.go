@@ -5,6 +5,7 @@ package migration
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ type Migration struct {
 	SQLDown            string
 	Irreversible       bool
 	IrreversibleReason string
+	ExecMode           ExecMode
+	BatchTable         string
+	BatchColumn        string
+	BatchSize          int
 	Status             Status
 	CreatedBy          string // username
 	CreatedAt          time.Time
@@ -94,6 +99,14 @@ type Run struct {
 	ErrorMessage string
 }
 
+// ExecMode adalah cara migration dijalankan worker.
+type ExecMode string
+
+const (
+	ExecNormal ExecMode = "normal" // seluruh SQL dalam satu transaction
+	ExecBatch  ExecMode = "batch"  // per batch berdasarkan kolom cursor
+)
+
 // Draft adalah isi migration yang ditulis user.
 type Draft struct {
 	Title              string
@@ -101,6 +114,14 @@ type Draft struct {
 	SQLDown            string
 	Irreversible       bool
 	IrreversibleReason string
+	// Mode batch: BatchTable ("tabel" atau "schema.tabel"), BatchColumn
+	// (kolom integer unik yang tidak berubah), dan BatchSize. SQL up dan
+	// down masing-masing satu statement yang memakai $1 (batas bawah,
+	// eksklusif) dan $2 (batas atas, inklusif).
+	ExecMode    ExecMode
+	BatchTable  string
+	BatchColumn string
+	BatchSize   int
 }
 
 func (d *Draft) normalize() {
@@ -111,6 +132,14 @@ func (d *Draft) normalize() {
 	}
 	if !d.Irreversible {
 		d.IrreversibleReason = ""
+	}
+	if d.ExecMode == "" {
+		d.ExecMode = ExecNormal
+	}
+	d.BatchTable = strings.TrimSpace(d.BatchTable)
+	d.BatchColumn = strings.TrimSpace(d.BatchColumn)
+	if d.ExecMode == ExecNormal {
+		d.BatchTable, d.BatchColumn, d.BatchSize = "", "", 0
 	}
 }
 
@@ -123,6 +152,9 @@ func (d Draft) validate() error {
 		return fmt.Errorf("SQL up: %w", err)
 	}
 	if d.Irreversible {
+		if err := d.validateBatch(); err != nil {
+			return err
+		}
 		if d.SQLDown != "" {
 			return fmt.Errorf("%w: migration irreversible tidak boleh punya SQL down", domain.ErrInvalidInput)
 		}
@@ -136,6 +168,45 @@ func (d Draft) validate() error {
 	}
 	if err := ValidateSQL(d.SQLDown); err != nil {
 		return fmt.Errorf("SQL down: %w", err)
+	}
+	return d.validateBatch()
+}
+
+var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func (d Draft) validateBatch() error {
+	switch d.ExecMode {
+	case ExecNormal:
+		return nil
+	case ExecBatch:
+	default:
+		return fmt.Errorf("%w: mode eksekusi harus normal atau batch", domain.ErrInvalidInput)
+	}
+	parts := strings.Split(d.BatchTable, ".")
+	if len(parts) > 2 {
+		return fmt.Errorf("%w: tabel batch harus berbentuk tabel atau schema.tabel", domain.ErrInvalidInput)
+	}
+	for _, p := range parts {
+		if !identRe.MatchString(p) {
+			return fmt.Errorf("%w: nama tabel batch tidak valid", domain.ErrInvalidInput)
+		}
+	}
+	if !identRe.MatchString(d.BatchColumn) {
+		return fmt.Errorf("%w: nama kolom batch tidak valid", domain.ErrInvalidInput)
+	}
+	if d.BatchSize < 1 || d.BatchSize > 1_000_000 {
+		return fmt.Errorf("%w: ukuran batch harus 1 sampai 1.000.000", domain.ErrInvalidInput)
+	}
+	for name, q := range map[string]string{"SQL up": d.SQLUp, "SQL down": d.SQLDown} {
+		if q == "" {
+			continue // irreversible tidak punya SQL down
+		}
+		if len(splitStatements(q)) != 1 {
+			return fmt.Errorf("%w: %s mode batch harus satu statement", domain.ErrInvalidInput, name)
+		}
+		if !strings.Contains(q, "$1") || !strings.Contains(q, "$2") {
+			return fmt.Errorf("%w: %s mode batch harus memakai $1 (batas bawah) dan $2 (batas atas) rentang batch", domain.ErrInvalidInput, name)
+		}
 	}
 	return nil
 }
@@ -196,6 +267,9 @@ func CheckRunnable(list []Migration, id int64, kind Kind) error {
 		return fmt.Errorf("%w: migration tidak ada di database ini", domain.ErrNotFound)
 	}
 
+	if kind != KindUp && target.ExecMode == ExecBatch {
+		return errBatchKind
+	}
 	if kind == KindRollback {
 		if target.Status != StatusSuccess {
 			return fmt.Errorf("%w: rollback hanya untuk migration yang sudah berhasil diterapkan (status sekarang %s)", domain.ErrConflict, target.Status)
@@ -224,11 +298,18 @@ func CheckRunnable(list []Migration, id int64, kind Kind) error {
 	return nil
 }
 
+// errBatchKind: batch committed dibatalkan lewat aksi revert pada job-nya
+// (kompensasi per batch), bukan rollback biasa.
+var errBatchKind = fmt.Errorf("%w: migration batch tidak memakai rollback atau forward biasa; batalkan batch lewat aksi revert pada job-nya", domain.ErrConflict)
+
 // CheckRequestable memeriksa status satu migration saat request perubahan
 // dibuat atau diajukan. Urutan belum diperiksa di tahap ini (request untuk
 // versi berikutnya boleh disiapkan lebih dulu); urutan diperiksa lagi saat
 // enqueue dan saat eksekusi dengan CheckRunnable.
 func CheckRequestable(m Migration, kind Kind) error {
+	if kind != KindUp && kind.Valid() && m.ExecMode == ExecBatch {
+		return errBatchKind
+	}
 	switch kind {
 	case KindUp:
 		if !m.Status.Executable() {
