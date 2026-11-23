@@ -16,7 +16,7 @@ export const sqlBox = {
   margin: 0,
 } as const;
 
-const sqlInput = {
+export const sqlInput = {
   width: '100%',
   minHeight: '8rem',
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
