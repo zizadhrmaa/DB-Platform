@@ -645,9 +645,9 @@ func TestAPIJobAndHistoryRoutesAreAuthorized(t *testing.T) {
 		{"GET", "/jobs/1", 404, 404, 404, 401}, // job 1 tidak ada
 		{"GET", "/jobs?status=aneh", 400, 400, 404, 401},
 		{"GET", "/history", 200, 200, 404, 401},
-		{"POST", "/jobs/1/resume", 501, 403, 404, 401},
-		{"POST", "/jobs/1/retry", 501, 403, 404, 401},
-		{"POST", "/jobs/1/revert", 501, 403, 404, 401},
+		{"POST", "/jobs/1/resume", 404, 403, 404, 401}, // job 1 tidak ada
+		{"POST", "/jobs/1/retry", 404, 403, 404, 401},
+		{"POST", "/jobs/1/revert", 400, 403, 404, 401}, // request_id wajib
 	}
 	for _, c := range cases {
 		path := "/api/databases/" + dbID + c.path

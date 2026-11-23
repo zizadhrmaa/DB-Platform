@@ -88,11 +88,11 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/databases/{dbID}/jobs/{jobID}",
 		dbRead(authz.ActionViewJobs, app.apiGetJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/resume",
-		dbWrite(authz.ActionManageJob, "job.resume", apiNotImplemented("Resume job")))
+		dbWrite(authz.ActionManageJob, "job.resume", app.apiResumeJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/retry",
-		dbWrite(authz.ActionManageJob, "job.retry", apiNotImplemented("Retry job")))
+		dbWrite(authz.ActionManageJob, "job.retry", app.apiResumeJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/revert",
-		dbWrite(authz.ActionManageJob, "job.revert", apiNotImplemented("Revert job")))
+		dbWrite(authz.ActionManageJob, "job.revert", app.apiRevertJob))
 	mux.Handle("GET /api/databases/{dbID}/history",
 		dbRead(authz.ActionViewHistory, app.apiHistory))
 }

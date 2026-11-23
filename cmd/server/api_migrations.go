@@ -20,6 +20,10 @@ type migrationResponse struct {
 	SQLDown            string     `json:"sql_down"`
 	Irreversible       bool       `json:"irreversible"`
 	IrreversibleReason string     `json:"irreversible_reason"`
+	ExecMode           string     `json:"exec_mode"`
+	BatchTable         string     `json:"batch_table"`
+	BatchColumn        string     `json:"batch_column"`
+	BatchSize          int        `json:"batch_size"`
 	Status             string     `json:"status"`
 	CreatedBy          string     `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
@@ -34,6 +38,7 @@ func toMigrationResponse(m migration.Migration) migrationResponse {
 	return migrationResponse{
 		ID: m.ID, Version: m.Version, Revision: m.Revision, Title: m.Title, SQL: m.SQL,
 		SQLDown: m.SQLDown, Irreversible: m.Irreversible, IrreversibleReason: m.IrreversibleReason,
+		ExecMode: string(m.ExecMode), BatchTable: m.BatchTable, BatchColumn: m.BatchColumn, BatchSize: m.BatchSize,
 		Status: string(m.Status), CreatedBy: m.CreatedBy, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 		ExecutedBy: m.ExecutedBy, ExecutedAt: m.ExecutedAt, FinishedAt: m.FinishedAt,
 		ErrorMessage: m.ErrorMessage,
@@ -70,10 +75,15 @@ type migrationDraftRequest struct {
 	SQLDown            string `json:"sql_down"`
 	Irreversible       bool   `json:"irreversible"`
 	IrreversibleReason string `json:"irreversible_reason"`
+	ExecMode           string `json:"exec_mode"`
+	BatchTable         string `json:"batch_table"`
+	BatchColumn        string `json:"batch_column"`
+	BatchSize          int    `json:"batch_size"`
 }
 
 func (r migrationDraftRequest) draft() migration.Draft {
-	return migration.Draft{Title: r.Title, SQLUp: r.SQLUp, SQLDown: r.SQLDown, Irreversible: r.Irreversible, IrreversibleReason: r.IrreversibleReason}
+	return migration.Draft{Title: r.Title, SQLUp: r.SQLUp, SQLDown: r.SQLDown, Irreversible: r.Irreversible, IrreversibleReason: r.IrreversibleReason,
+		ExecMode: migration.ExecMode(r.ExecMode), BatchTable: r.BatchTable, BatchColumn: r.BatchColumn, BatchSize: r.BatchSize}
 }
 
 func migrationIDs(r *http.Request) (int64, int64, error) {
