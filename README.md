@@ -295,10 +295,75 @@ web/                 template Go, fallback embed & aset statis
 > kompensasi per batch, status `partial` dan `partially_reverted`), serta
 > dataset uji (jumlah row dan durasi `UPDATE` penuh dibanding mode batch).
 
-> TODO (Mirza): jelaskan SQL up/down, migration irreversible, revisi yang
-> immutable, aturan rollback (hanya migration aktif terakhir) dan forward,
-> riwayat migration yang mencatat semua attempt, dan checkbox Hide rollback
-> beserta contoh E1–E5.
+### Migration v2: up/down, rollback, forward, dan riwayat
+
+**SQL up dan down.** Setiap migration punya SQL up dan SQL down, atau ditandai
+*irreversible* beserta alasannya (`POST /api/databases/{dbID}/migrations` dengan
+`sql_up`, `sql_down`, `irreversible`, `irreversible_reason`). Aturan ini dijaga
+CHECK constraint `migrations_down_or_irreversible`. Migration dari Milestone 1
+dan yang dibuat lewat halaman lama tidak punya SQL down, jadi otomatis
+irreversible.
+
+**Revisi immutable.** Migration hanya bisa diedit selama `pending` atau
+`failed` dan belum masuk request atau antrean. Setiap edit menaikkan
+`revision`. Setelah pernah berhasil dieksekusi, SQL up dan down tidak bisa
+diubah lagi, termasuk saat mengajukan rollback atau forward; perbaikan dilakukan
+dengan migration baru. Setiap attempt menyimpan revisi dan salinan SQL yang
+benar-benar dijalankan di `migration_runs`.
+
+**Status migration.** `pending → success` (up), `success → rolled_back`
+(rollback), `rolled_back → success` (forward). Attempt yang gagal tidak mengubah
+posisi aktif: up gagal menjadi `failed`, rollback gagal tetap `success`, forward
+gagal tetap `rolled_back`. Migration `rolled_back` boleh di-*discard* supaya
+versi berikutnya bisa jalan; riwayatnya tetap ada.
+
+**Aturan rollback dan forward** (`migration.CheckRunnable`):
+
+- Rollback hanya untuk migration aktif terakhir, yaitu versi tertinggi yang
+  berstatus `success`, dan tidak boleh irreversible. Untuk A → B → C, C harus
+  di-rollback sebelum B.
+- Rollback menjalankan SQL down asli migration itu dan merujuk execution ID
+  up/forward yang dibatalkannya (`reverts_execution_id`).
+- Forward menjalankan SQL up lagi untuk migration `rolled_back` yang merupakan
+  giliran berikutnya, dan tidak otomatis menjalankan migration lain.
+- Rollback dan forward adalah eksekusi baru dengan execution ID sendiri, melewati
+  request, approval semua leader, antrean, dan worker seperti up.
+
+**Bukti di database target.** `_dbplatform_history` berisi versi yang sedang
+aktif dan ditulis dalam transaction yang sama dengan SQL migration: up/forward
+menambah versi, rollback menghapusnya (harus tepat satu baris, sehingga rollback
+ganda ditolak). Pemulihan memakai tabel ini untuk memastikan hasil attempt yang
+terputus, termasuk rollback.
+
+**Riwayat.** Semua attempt (sukses, gagal, rollback, forward, retry) dicatat di
+log aplikasi JSON (`migration.attempt_start`, `sql_start`, `sql_result`,
+`sql_commit`/`sql_rollback`, `migration.attempt_result`) dengan migration ID,
+execution ID, versi, revisi, pengguna, waktu, status, dan salinan SQL. Tabel
+`migration_history` hanya berisi eksekusi yang berhasil di-commit, ditulis dalam
+transaction yang sama dengan status attempt, dan dijaga trigger supaya tidak bisa
+di-UPDATE, DELETE, atau TRUNCATE. Tabel ini sengaja tanpa foreign key supaya
+riwayat tetap ada walaupun koneksi atau user dihapus.
+
+`GET /api/databases/{dbID}/history` mengembalikan eksekusi committed dan attempt
+yang gagal (supaya kegagalan tetap terlihat). Dengan `?hide_rollback=true`
+(checkbox **Hide rollback** di SPA), pasangan eksekusi yang dibatalkan dan
+rollback sukses yang membatalkannya disembunyikan berdasarkan execution ID:
+
+| Riwayat lengkap | Hide rollback |
+|---|---|
+| A [E1] | A [E1] |
+| B [E2] | |
+| B rollback E2 [E3] | |
+| B forward [E4] | B [E4] |
+| C [E5] | C [E5] |
+
+Filter ini tidak menghapus data riwayat maupun log. Contoh ini diuji di
+`TestHistoryHideRollbackSpecExample`.
+
+**SPA.** Halaman `Migration` (daftar dan pembuatan dengan SQL up/down atau
+irreversible), detail migration (SQL, revisi, eksekusi, edit, discard, dan tombol
+ajukan up/rollback/forward), serta `Riwayat eksekusi` dengan checkbox Hide
+rollback.
 
 ## Keputusan desain Milestone 2
 
@@ -496,4 +561,19 @@ akses berubah sebelum job berjalan, approval dicabut dan request kembali ke
 Menjalankan SPA: `make fe-build` lalu `make run`, buka `http://localhost:8080/app/`. Untuk pengembangan: `make fe-dev`.
 
 > TODO (Aziza): hasil stress test k6 (script, threshold, hasil per tingkat beban).
-> TODO (Mirza): temuan CodeQL dan keputusan tiap temuan.
+
+### Security: SAST dengan CodeQL (bonus)
+
+Workflow `.github/workflows/codeql.yml` menjalankan CodeQL (query
+`security-extended`) untuk Go dan TypeScript pada push dan pull request ke
+`main`, setiap Senin, dan manual lewat *Run workflow*. Hasilnya ada di tab
+**Security → Code scanning**.
+
+> TODO (Mirza): setelah scan pertama selesai, isi tabel temuan di bawah: rule,
+> severity, lokasi, dampak, keputusan (diperbaiki / false positive / risiko
+> diterima) beserta alasan, dan commit perbaikan + hasil scan ulang. Jika tidak
+> ada temuan, tulis cakupan kode yang dianalisis dan lampirkan hasil scan.
+
+| Rule | Severity | Lokasi | Dampak | Keputusan | Alasan / commit |
+|---|---|---|---|---|---|
+| | | | | | |
