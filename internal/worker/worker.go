@@ -237,9 +237,6 @@ func (o outcome) label() string {
 
 // run memeriksa ulang syarat job lalu menjalankan migration.
 func (w *Worker) run(ctx context.Context, cfg Config, j *queue.Job) outcome {
-	if j.Kind != queue.KindUp {
-		return fail("Rollback dan forward belum didukung worker.")
-	}
 	if j.Mode != queue.ModeNormal {
 		return fail("Mode batch belum didukung worker.")
 	}
@@ -265,6 +262,7 @@ func (w *Worker) run(ctx context.Context, cfg Config, j *queue.Job) outcome {
 	}
 
 	run, err := w.Exec.ExecuteWith(ctx, u, j.DBID, j.MigrationID, migration.ExecOptions{
+		Kind:    migration.Kind(j.Kind),
 		Timeout: cfg.JobTimeout,
 		OnStart: func(ctx context.Context, tx *sql.Tx, runID int64) error {
 			return w.Queue.SetRun(ctx, tx, j.ID, cfg.ID, runID)

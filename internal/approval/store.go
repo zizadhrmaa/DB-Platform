@@ -145,28 +145,46 @@ func reason(err error) error {
 	return err
 }
 
+// DefaultGuard memeriksa aturan migration untuk setiap jenis perubahan.
+// Saat request dibuat atau diajukan, hanya status migration yang diperiksa
+// (request versi berikutnya boleh disiapkan lebih dulu). Saat enqueue dan
+// eksekusi, urutan linear ikut diperiksa: up dan forward harus giliran
+// berikutnya, rollback hanya untuk migration aktif terakhir. Eksekusi target
+// rollback, kalau disebut, harus eksekusi up/forward aktif terakhir.
 func DefaultGuard(m migration.Service) Guard {
-	return func(ctx context.Context, stage Stage, dbID, migrationID int64, kind queue.Kind, _ *int64) error {
-		if kind != queue.KindUp {
-			return httpx.Conflict("Rollback dan forward belum tersedia sampai modul migration v2 terpasang.")
-		}
+	return func(ctx context.Context, stage Stage, dbID, migrationID int64, kind queue.Kind, target *int64) error {
 		list, err := m.List(ctx, dbID)
 		if err != nil {
 			return err
 		}
+		mk := migration.Kind(kind)
 		if stage == StageCreate || stage == StageSubmit {
+			found := false
 			for _, it := range list {
-				if it.ID != migrationID {
-					continue
+				if it.ID == migrationID {
+					found = true
+					if err := reason(migration.CheckRequestable(it, mk)); err != nil {
+						return err
+					}
 				}
-				if !it.Status.Executable() {
-					return httpx.Conflict(fmt.Sprintf("Migration berstatus %s tidak bisa diajukan.", it.Status))
-				}
-				return nil
 			}
-			return httpx.NotFound("Migration tidak ditemukan di database ini.")
+			if !found {
+				return httpx.NotFound("Migration tidak ditemukan di database ini.")
+			}
+		} else if err := reason(migration.CheckRunnable(list, migrationID, mk)); err != nil {
+			return err
 		}
-		return reason(migration.CheckExecutable(list, migrationID))
+		if mk != migration.KindRollback || target == nil {
+			return nil
+		}
+		runs, err := m.Runs(ctx, dbID, migrationID)
+		if err != nil {
+			return reason(err)
+		}
+		if last, ok := migration.LatestApplied(runs); !ok || last.ID != *target {
+			return httpx.Conflict("Eksekusi target bukan eksekusi aktif terakhir migration ini.")
+		}
+		return nil
 	}
 }
 
@@ -341,8 +359,9 @@ func loadDetail(ctx context.Context, q queryer, dbID, id int64) (*Detail, error)
 	}
 	d := &Detail{Request: req, Approvals: []Approval{}}
 	err = q.QueryRowContext(ctx, `
-		SELECT m.sql_text, COALESCE((SELECT t.sql_text FROM migration_runs t WHERE t.id = $2), '')
-		FROM migrations m WHERE m.id = $1`, req.MigrationID, req.TargetExecutionID).Scan(&d.SQL, &d.TargetSQL)
+		SELECT CASE WHEN $3 = 'rollback' THEN COALESCE(m.sql_down, '') ELSE m.sql_text END,
+		       COALESCE((SELECT t.sql_text FROM migration_runs t WHERE t.id = $2), '')
+		FROM migrations m WHERE m.id = $1`, req.MigrationID, req.TargetExecutionID, string(req.Kind)).Scan(&d.SQL, &d.TargetSQL)
 	if err != nil {
 		return nil, err
 	}

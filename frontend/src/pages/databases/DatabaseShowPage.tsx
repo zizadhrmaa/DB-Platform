@@ -76,6 +76,12 @@ export const DatabaseShowPage: React.FC = () => {
       </div>
 
       <div className="row" style={{ marginBottom: '1.25rem' }}>
+        <Link className="btn btn-secondary" to={`/databases/${db.id}/migrations`}>
+          Migration
+        </Link>
+        <Link className="btn btn-secondary" to={`/databases/${db.id}/history`}>
+          Riwayat eksekusi
+        </Link>
         <Link className="btn btn-secondary" to={`/databases/${db.id}/changes`}>
           Request perubahan
         </Link>
