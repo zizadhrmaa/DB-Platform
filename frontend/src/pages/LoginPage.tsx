@@ -33,6 +33,15 @@ export const LoginPage = () => {
   };
 
   return (
+    <>
+      <header className="header">
+        <span className="header-brand">
+          <span className="brand-icon" aria-hidden="true">
+            ▤
+          </span>
+          <span>DB Platform</span>
+        </span>
+      </header>
     <div className="container narrow">
       <form className="card" onSubmit={onSubmit}>
         <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Masuk</h1>
@@ -65,5 +74,6 @@ export const LoginPage = () => {
         </button>
       </form>
     </div>
+    </>
   );
 };

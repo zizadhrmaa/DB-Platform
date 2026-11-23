@@ -727,8 +727,9 @@ Antarmuka dipindahkan ke SPA berbasis React + TypeScript di folder `frontend/`:
 - **Ringkasan Schema**: Mengelompokkan relasi berdasarkan schema dengan badge tipe (`tabel`, `view`, `materialized view`, `foreign table`, dsb.).
 - **Detail Struktur Tabel**: Kolom (tipe, nullable, default), Constraint (PK, FK, Unique, Check), dan Index.
 - **Data Viewer Berpagination**: Pagination default 50 baris (dapat dipilih 10, 25, 50, 100, 200), indikator total baris dan estimasi, serta penanganan sel `NULL` dan teks panjang.
+- **Tampilan**: tema "Peach Pudding" yang sama dengan halaman Milestone 1 (warna, header, kartu, tabel, dan halaman daftar database dengan hero dan kartu database), sekarang sebagai SPA.
 - **Responsivitas**: Komponen tabel lebar memiliki pembungkus scroll horizontal internal (`.table-responsive-wrapper`), SQL di `<pre>` dan editor punya scroll sendiri, sehingga tidak merusak lebar layout halaman baik pada mobile (360px) maupun desktop (1280px).
-- **Hasil uji responsif** (23 November 2026, Chrome headless lewat DevTools Protocol): 20 halaman SPA (login, daftar database, schema, struktur dan data tabel, migration, detail migration, schema diff, riwayat, job, detail job batch, request, detail request, admin user/group/koneksi) diukur pada lebar 360 px dan 1280 px. Di semua halaman lebar dokumen tidak melebihi lebar layar (tidak ada scroll horizontal di level halaman) dan tidak ada tombol, input, atau select yang berada di luar layar. Contoh tampilan 360 px:
+- **Hasil uji responsif** (23 November 2026, Chrome headless lewat DevTools Protocol): 20 halaman SPA dengan tema akhir (login, daftar database, schema, struktur dan data tabel, migration, detail migration, schema diff, riwayat, job, detail job batch, request, detail request, admin user/group/koneksi) diukur pada lebar 360 px dan 1280 px. Di semua halaman lebar dokumen tidak melebihi lebar layar (tidak ada scroll horizontal di level halaman) dan tidak ada tombol, input, atau select yang berada di luar layar. Contoh tampilan 360 px:
 
   ![SPA di layar 360 px](docs/img/spa-mobile-360.png)
 
