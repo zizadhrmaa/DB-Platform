@@ -12,6 +12,9 @@ import { ChangeDetailPage } from './pages/changes/ChangeDetailPage';
 import { MigrationsPage } from './pages/migrations/MigrationsPage';
 import { MigrationDetailPage } from './pages/migrations/MigrationDetailPage';
 import { HistoryPage } from './pages/migrations/HistoryPage';
+import { SchemaDiffPage } from './pages/migrations/tools';
+import { JobsPage } from './pages/jobs/JobsPage';
+import { JobDetailPage } from './pages/jobs/JobDetailPage';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { UsersPage } from './pages/admin/UsersPage';
 import { UserDetailPage } from './pages/admin/UserDetailPage';
@@ -37,8 +40,11 @@ export const App = () => (
             <Route path="databases/:dbID/changes" element={<ChangesPage />} />
             <Route path="databases/:dbID/changes/:requestID" element={<ChangeDetailPage />} />
             <Route path="databases/:dbID/migrations" element={<MigrationsPage />} />
+            <Route path="databases/:dbID/migrations/diff" element={<SchemaDiffPage />} />
             <Route path="databases/:dbID/migrations/:migrationID" element={<MigrationDetailPage />} />
             <Route path="databases/:dbID/history" element={<HistoryPage />} />
+            <Route path="databases/:dbID/jobs" element={<JobsPage />} />
+            <Route path="databases/:dbID/jobs/:jobID" element={<JobDetailPage />} />
             <Route element={<RequireAuth admin />}>
               <Route path="admin" element={<AdminLayout />}>
                 <Route index element={<Navigate to="users" replace />} />

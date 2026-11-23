@@ -158,6 +158,17 @@ func DefaultGuard(m migration.Service) Guard {
 			return err
 		}
 		mk := migration.Kind(kind)
+		// Untuk migration batch, request rollback adalah jalur revert
+		// (kompensasi per batch lewat POST /jobs/{id}/revert). Syaratnya
+		// diperiksa ConsumeRevert (job harus partial/partially_reverted) dan
+		// worker; rollback biasa tetap ditolak CheckRunnable saat eksekusi.
+		if mk == migration.KindRollback {
+			for _, it := range list {
+				if it.ID == migrationID && it.ExecMode == migration.ExecBatch {
+					return nil
+				}
+			}
+		}
 		if stage == StageCreate || stage == StageSubmit {
 			found := false
 			for _, it := range list {
@@ -791,10 +802,19 @@ func (s *Store) Enqueue(ctx context.Context, u *domain.User, dbID, id int64) (*q
 	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE request_id = $1`, id).Scan(&attempts); err != nil {
 		return nil, err
 	}
+	mode := queue.ModeNormal
+	var execMode string
+	if err := s.DB.QueryRowContext(ctx, `SELECT exec_mode FROM migrations WHERE id = $1`, r.migrationID).Scan(&execMode); err != nil {
+		return nil, err
+	}
+	if execMode == string(queue.ModeBatch) && r.kind == queue.KindUp {
+		mode = queue.ModeBatch
+	}
 	job, _, err := s.Queue.Enqueue(ctx, queue.EnqueueParams{
 		DBID:           dbID,
 		MigrationID:    r.migrationID,
 		Kind:           r.kind,
+		Mode:           mode,
 		IdempotencyKey: fmt.Sprintf("request-%d-%d", id, attempts),
 		RequestedBy:    u.ID,
 		RequestID:      &id,

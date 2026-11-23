@@ -67,6 +67,12 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 		dbWrite(authz.ActionEditMigration, "migration.update", app.apiUpdateMigration))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/discard",
 		dbWrite(authz.ActionEditMigration, "migration.discard", app.apiDiscardMigration))
+	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/explain",
+		dbWrite(authz.ActionExecuteMigration, "migration.explain", app.apiExplainMigration))
+	mux.Handle("GET /api/databases/{dbID}/schema-diff",
+		dbRead(authz.ActionCreateMigration, app.apiCurrentSchema))
+	mux.Handle("POST /api/databases/{dbID}/schema-diff",
+		dbWrite(authz.ActionCreateMigration, "migration.schema_diff", app.apiSchemaDiff))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/requests",
 		dbWrite(authz.ActionRequestChange, "change.create", app.apiCreateChange))
 	mux.Handle("GET /api/databases/{dbID}/requests",
@@ -88,11 +94,11 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/databases/{dbID}/jobs/{jobID}",
 		dbRead(authz.ActionViewJobs, app.apiGetJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/resume",
-		dbWrite(authz.ActionManageJob, "job.resume", apiNotImplemented("Resume job")))
+		dbWrite(authz.ActionManageJob, "job.resume", app.apiResumeJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/retry",
-		dbWrite(authz.ActionManageJob, "job.retry", apiNotImplemented("Retry job")))
+		dbWrite(authz.ActionManageJob, "job.retry", app.apiResumeJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/revert",
-		dbWrite(authz.ActionManageJob, "job.revert", apiNotImplemented("Revert job")))
+		dbWrite(authz.ActionManageJob, "job.revert", app.apiRevertJob))
 	mux.Handle("GET /api/databases/{dbID}/history",
 		dbRead(authz.ActionViewHistory, app.apiHistory))
 }

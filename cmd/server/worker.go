@@ -39,6 +39,9 @@ func approvalRevalidator(a *approval.Store) worker.Revalidator {
 		if j.RequestID == nil {
 			return errors.New("job tidak berasal dari request perubahan yang disetujui")
 		}
-		return a.Revalidate(ctx, *j.RequestID, u.ID, false)
+		// Melanjutkan atau membatalkan batch tidak memerlukan approval ulang
+		// (keputusan tim), tetapi pengaju tetap harus aktif dan berhak.
+		resume := j.Mode == queue.ModeBatch && (j.Action == queue.ActionRevert || j.BatchesCommitted > 0 || j.Attempt > 1)
+		return a.Revalidate(ctx, *j.RequestID, u.ID, resume)
 	}
 }

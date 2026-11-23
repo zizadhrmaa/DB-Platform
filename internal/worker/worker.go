@@ -237,9 +237,6 @@ func (o outcome) label() string {
 
 // run memeriksa ulang syarat job lalu menjalankan migration.
 func (w *Worker) run(ctx context.Context, cfg Config, j *queue.Job) outcome {
-	if j.Mode != queue.ModeNormal {
-		return fail("Mode batch belum didukung worker.")
-	}
 	if j.RequestedBy == nil {
 		return fail("Pengaju job sudah tidak ada.")
 	}
@@ -261,6 +258,9 @@ func (w *Worker) run(ctx context.Context, cfg Config, j *queue.Job) outcome {
 		}
 	}
 
+	if j.Mode == queue.ModeBatch {
+		return w.runBatch(ctx, cfg, j, u)
+	}
 	run, err := w.Exec.ExecuteWith(ctx, u, j.DBID, j.MigrationID, migration.ExecOptions{
 		Kind:    migration.Kind(j.Kind),
 		Timeout: cfg.JobTimeout,
@@ -269,6 +269,54 @@ func (w *Worker) run(ctx context.Context, cfg Config, j *queue.Job) outcome {
 		},
 	})
 	return classify(run, err)
+}
+
+// BatchExecutor dipenuhi *migration.Store.
+type BatchExecutor interface {
+	ExecuteBatch(ctx context.Context, u *domain.User, dbID, id int64, opt migration.BatchOptions) (*migration.BatchResult, error)
+}
+
+// runBatch menjalankan job batch: action run melanjutkan dari checkpoint di
+// database target, action revert membatalkan batch committed. Progres
+// ditulis ke job setelah setiap batch (hanya oleh pemegang lease).
+func (w *Worker) runBatch(ctx context.Context, cfg Config, j *queue.Job, u *domain.User) outcome {
+	bx, ok := w.Exec.(BatchExecutor)
+	if !ok {
+		return fail("Worker ini tidak mendukung mode batch.")
+	}
+	action := migration.BatchRun
+	if j.Action == queue.ActionRevert {
+		action = migration.BatchRevert
+	}
+	progress := func(ctx context.Context, p migration.BatchProgress) error {
+		return w.Queue.Progress(ctx, j.ID, cfg.ID, p.Batches, p.Rows, strconv.FormatInt(p.Cursor, 10))
+	}
+	res, err := bx.ExecuteBatch(ctx, u, j.DBID, j.MigrationID, migration.BatchOptions{
+		JobID:   j.ID,
+		Action:  action,
+		Timeout: cfg.JobTimeout,
+		OnStart: func(ctx context.Context, tx *sql.Tx, runID int64) error {
+			return w.Queue.SetRun(ctx, tx, j.ID, cfg.ID, runID)
+		},
+		OnBatch: progress,
+	})
+	if err != nil {
+		return classify(nil, err)
+	}
+	if err := progress(ctx, res.Progress); errors.Is(err, queue.ErrLeaseLost) {
+		return outcome{act: actLost}
+	}
+	switch res.Status {
+	case migration.BatchSucceeded:
+		return finish(queue.StatusSucceeded, "")
+	case migration.BatchReverted:
+		return finish(queue.StatusReverted, "")
+	case migration.BatchPartial:
+		return finish(queue.StatusPartial, res.Message)
+	case migration.BatchPartiallyReverted:
+		return finish(queue.StatusPartiallyReverted, res.Message)
+	}
+	return fail(res.Message)
 }
 
 // classify memetakan hasil eksekusi ke tindakan pada job.

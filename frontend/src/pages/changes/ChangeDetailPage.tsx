@@ -70,7 +70,7 @@ export const ChangeDetailPage = () => {
         {data.reject_reason && <div className="error-banner">Ditolak: {data.reject_reason}</div>}
         {data.job_id && (
           <p>
-            Job #{data.job_id}: <strong>{data.job_status}</strong>
+            <Link to={`/databases/${dbID}/jobs/${data.job_id}`}>Job #{data.job_id}</Link>: <strong>{data.job_status}</strong>
           </p>
         )}
         {canRerun && (

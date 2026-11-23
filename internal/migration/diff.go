@@ -247,7 +247,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, schema string) (*snapshot, er
 	rows, e := tx.QueryContext(ctx, `
 		SELECT c.relname, quote_ident(c.relname)
 		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = $1 AND c.relkind = 'r' AND NOT c.relispartition AND c.relname <> '_dbplatform_history'
+		WHERE n.nspname = $1 AND c.relkind = 'r' AND NOT c.relispartition AND c.relname NOT LIKE '\_dbplatform\_%'
 		ORDER BY c.relname`, schema)
 	if e != nil {
 		return nil, e

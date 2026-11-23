@@ -1,7 +1,7 @@
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
 TEST_MYSQL_DATABASE_URL ?= platform_app:platform_app_pass@tcp(localhost:3306)/kampus?parseTime=true&multiStatements=true
 
-.PHONY: up down run test test-unit test-integration vet fmt keygen fe-dev fe-build obs-up obs-down
+.PHONY: up down run test test-unit test-integration vet fmt keygen fe-dev fe-build obs-up obs-down bench-batch
 
 up:            ## nyalakan semua database 
 	docker compose up -d
@@ -41,3 +41,11 @@ obs-up:        ## jalankan stack observability (otel collector, jaeger, promethe
 
 obs-down:      ## matikan stack observability
 	docker compose --profile obs down
+
+BENCH_DATABASE_URL ?= postgres://postgres:postgres@localhost:55432/bench?sslmode=disable
+BENCH_ROWS ?= 3000000
+
+bench-batch:   ## dataset uji: UPDATE penuh tanpa batch vs per batch (database bench di test-db)
+	docker compose up -d --wait test-db
+	docker compose exec -T test-db psql -U postgres -qc "DROP DATABASE IF EXISTS bench" -c "CREATE DATABASE bench"
+	BENCH_DATABASE_URL="$(BENCH_DATABASE_URL)" go run ./cmd/benchbatch -rows $(BENCH_ROWS) -sizes 10000,50000,200000

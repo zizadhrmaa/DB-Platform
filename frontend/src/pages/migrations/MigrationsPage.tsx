@@ -48,6 +48,11 @@ export const MigrationsPage = () => {
             Buat migration
           </button>
         )}
+        {canEdit && (
+          <Link className="btn btn-secondary" to={`/databases/${dbID}/migrations/diff`}>
+            Buat dari schema diff
+          </Link>
+        )}
       </div>
 
       {creating && (

@@ -257,7 +257,7 @@ func (h *Handler) DiffForm(w http.ResponseWriter, r *http.Request) {
 	}
 	schema := r.URL.Query().Get("schema")
 	if schema == "" {
-		schema = defaultSchema(schemas)
+		schema = DefaultSchema(schemas)
 	}
 	u, _ := auth.CurrentUser(r.Context())
 	ddl, e := h.Service.CurrentSchema(r.Context(), u, dbID, schema)
@@ -302,8 +302,8 @@ func (h *Handler) Diff(w http.ResponseWriter, r *http.Request) {
 	h.View.Render(w, r, http.StatusOK, "migration/diff", view.PageData{Title: "Schema diff", Data: p})
 }
 
-// defaultSchema memilih public kalau ada, selain itu schema pertama.
-func defaultSchema(schemas []string) string {
+// DefaultSchema memilih public kalau ada, selain itu schema pertama.
+func DefaultSchema(schemas []string) string {
 	for _, s := range schemas {
 		if s == "public" {
 			return s

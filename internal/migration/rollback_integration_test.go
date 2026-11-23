@@ -146,9 +146,15 @@ func TestRollbackFailureKeepsActivePosition(t *testing.T) {
 	if len(full) != 2 || full[0].ExecutionID != up.ID || full[1].ExecutionID != rb.ID || full[1].Status != StatusFailed {
 		t.Fatalf("kegagalan tetap terlihat di riwayat: %+v", full)
 	}
-	var committed int
-	if err := env.store.DB.QueryRow(`SELECT count(*) FROM migration_history WHERE execution_id = $1`, rb.ID).Scan(&committed); err != nil || committed != 0 {
-		t.Fatalf("attempt gagal tidak boleh masuk migration_history: %d err=%v", committed, err)
+	// Spek revisi 4: attempt gagal juga disimpan di migration_history,
+	// lengkap dengan status, pesan error, dan salinan SQL yang dijalankan.
+	var status, sqlText, msg string
+	if err := env.store.DB.QueryRow(`SELECT status, sql_text, COALESCE(error_message,'') FROM migration_history WHERE execution_id = $1`, rb.ID).
+		Scan(&status, &sqlText, &msg); err != nil || status != "failed" || sqlText != "DROP TABLE tidak_ada" || !strings.Contains(msg, "tidak_ada") {
+		t.Fatalf("attempt gagal wajib tercatat di migration_history: status=%q sql=%q msg=%q err=%v", status, sqlText, msg, err)
+	}
+	if _, err := env.store.DB.Exec(`UPDATE migration_history SET status = 'success' WHERE execution_id = $1`, rb.ID); err == nil {
+		t.Fatal("catatan attempt gagal tidak boleh bisa ditimpa")
 	}
 	hidden, _ := env.store.History(ctx, env.dbID, true)
 	if len(hidden) != 2 {

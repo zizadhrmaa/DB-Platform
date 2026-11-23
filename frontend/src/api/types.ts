@@ -116,6 +116,10 @@ export interface Migration {
   sql_down: string;
   irreversible: boolean;
   irreversible_reason: string;
+  exec_mode: 'normal' | 'batch';
+  batch_table: string;
+  batch_column: string;
+  batch_size: number;
   status: MigrationStatus;
   created_by: string;
   created_at: string;
@@ -154,4 +158,44 @@ export interface MigrationDraft {
   sql_down: string;
   irreversible: boolean;
   irreversible_reason: string;
+  exec_mode: 'normal' | 'batch';
+  batch_table: string;
+  batch_column: string;
+  batch_size: number;
 }
+
+export type JobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'uncertain'
+  | 'partial'
+  | 'partially_reverted'
+  | 'reverted';
+
+export interface Job {
+  id: number;
+  db_id: number;
+  migration_id: number;
+  request_id: number | null;
+  kind: ExecutionKind;
+  mode: 'normal' | 'batch';
+  action: 'run' | 'revert';
+  status: JobStatus;
+  requested_by: number | null;
+  attempt: number;
+  max_attempts: number;
+  next_run_at: string;
+  execution_id: number | null;
+  batches_committed: number;
+  rows_committed: number;
+  last_cursor: string;
+  error_message: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+export const terminalJobStatuses: JobStatus[] = ['succeeded', 'failed', 'reverted'];
