@@ -37,7 +37,7 @@ fe-build:      ## build frontend ke web/dist
 	cd frontend && npm run build
 
 obs-up:        ## jalankan stack observability (otel collector, jaeger, prometheus, grafana)
-	docker compose --profile obs up -d
+	docker compose --profile obs up -d otel-collector loki jaeger prometheus grafana
 
 obs-down:      ## matikan stack observability
 	docker compose --profile obs down

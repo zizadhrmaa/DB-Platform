@@ -7,9 +7,12 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -20,16 +23,27 @@ func Tracer() trace.Tracer {
 	return otel.Tracer(TracerName)
 }
 
+// serviceResource memberi nama service pada trace dan log yang dikirim.
+func serviceResource(serviceName string) *resource.Resource {
+	return resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(serviceName))
+}
+
 // InitTracer menginisialisasi TracerProvider dan Propagator standar W3C TraceContext.
-// Default exporter adalah console (stdout), atau discard jika OTEL_TRACES_EXPORTER=none.
+// Exporter dipilih lewat OTEL_TRACES_EXPORTER:
+//   - otlp    : OTLP/HTTP ke OpenTelemetry Collector (alamat dari
+//     OTEL_EXPORTER_OTLP_ENDPOINT, default http://localhost:4318)
+//   - none    : span tidak diekspor
+//   - lainnya : console (stdout), default
 func InitTracer(ctx context.Context, serviceName string) (*sdktrace.TracerProvider, func(context.Context) error, error) {
 	var exporter sdktrace.SpanExporter
 	var err error
 
-	exporterType := os.Getenv("OTEL_TRACES_EXPORTER")
-	if exporterType == "none" {
+	switch os.Getenv("OTEL_TRACES_EXPORTER") {
+	case "none":
 		exporter, err = stdouttrace.New(stdouttrace.WithWriter(io.Discard))
-	} else {
+	case "otlp":
+		exporter, err = otlptracehttp.New(ctx)
+	default:
 		// Default: stdout trace exporter
 		exporter, err = stdouttrace.New(
 			stdouttrace.WithPrettyPrint(),
@@ -42,6 +56,7 @@ func InitTracer(ctx context.Context, serviceName string) (*sdktrace.TracerProvid
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(serviceResource(serviceName)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
 

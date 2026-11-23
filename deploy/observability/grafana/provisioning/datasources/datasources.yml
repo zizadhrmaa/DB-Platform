@@ -1,7 +1,12 @@
 apiVersion: 1
 
+# Korelasi:
+#   - Loki -> Jaeger: field trace_id di log menjadi tautan ke trace di Jaeger.
+#   - Jaeger -> Loki: dari span, buka log dengan trace_id yang sama.
+#   - Prometheus: metrik queue/migration dan connection pool.
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
@@ -9,7 +14,32 @@ datasources:
     editable: true
 
   - name: Jaeger
+    uid: jaeger
     type: jaeger
     access: proxy
     url: http://jaeger:16686
     editable: true
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        filterByTraceID: false
+        filterBySpanID: false
+        customQuery: true
+        query: '{service_name="dbplatform"} | trace_id="$${__span.traceId}"'
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: jaeger
+          url: "$${__value.raw}"
+          urlDisplayLabel: "Lihat trace di Jaeger"

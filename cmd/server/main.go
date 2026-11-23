@@ -48,6 +48,16 @@ func run() error {
 	} else if shutdownTracer != nil {
 		defer shutdownTracer(context.Background())
 	}
+	// Log tetap ke stdout; dengan OTEL_LOGS_EXPORTER=otlp juga dikirim ke
+	// OpenTelemetry Collector.
+	otlpLogs, shutdownLogs, err := obs.InitLogs(ctx, "dbplatform")
+	if err != nil {
+		slog.Warn("gagal inisialisasi pengiriman log OTLP", "err", err)
+	} else if otlpLogs != nil {
+		slog.SetDefault(slog.New(obs.NewJSONHandler(os.Stdout, nil, otlpLogs)))
+		defer shutdownLogs(context.Background())
+		slog.Info("log juga dikirim ke OpenTelemetry Collector", "event", "obs.logs_otlp")
+	}
 
 	db, err := platformdb.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

@@ -157,6 +157,14 @@ Kebijakan akses tiap aksi (`db.change.view`, `db.change.request`,
 
 ## Route (Milestone 1, halaman lama)
 
+**Milestone 2:** seluruh tampilan sudah dipindahkan ke SPA (`/app/`). Secara
+default halaman template Go di bawah tidak dilayani lagi: GET ke URL lama
+dialihkan (302) ke halaman SPA yang setara (misalnya `/login` ke `/app/login`,
+`/admin/databases/4` ke `/app/admin/connections/4`), dan form POST lama tidak
+tersedia karena SPA memakai `/api`. Handler lama hanya didaftarkan di test
+(`App.LegacyHTML`) supaya perilaku Milestone 1 tetap teruji. Tabel berikut
+mendokumentasikan route Milestone 1.
+
 Form HTML cuma bisa GET dan POST, jadi ubah dan hapus memakai POST ke
 sub-path. User tanpa akses ke database mendapat 404 supaya keberadaan
 database tidak bocor, sedangkan user View Only yang mencoba aksi Edit
@@ -529,22 +537,27 @@ Handler secara otomatis mendeteksi dan menyamarkan informasi sensitif:
 - String koneksi (DSN PostgreSQL atau MySQL) yang berada di dalam pesan atau argumen diredaksi bagian password-nya (misal: `postgres://user:[REDACTED]@host:5432/db`).
 - Parameter query SQL diredaksi menggunakan `obs.RedactArgs`.
 
-#### Contoh Output Log HTTP:
+#### Contoh Output Log HTTP
+
+Output asli (23 November 2026) dari request enqueue job batch yang dipakai
+di [`docs/observability.md`](docs/observability.md):
+
 ```json
 {
-  "time": "2026-11-20T11:15:30.123456Z",
+  "time": "2026-11-23T12:25:39.7804845+07:00",
   "level": "INFO",
   "msg": "http",
   "event": "http_request",
-  "actor": "bob",
+  "actor": "admin",
+  "status": 202,
+  "correlation_id": "demo-enqueue-batch-1",
+  "method": "POST",
+  "path": "/api/databases/1/requests/1/enqueue",
+  "dur_ms": 25,
   "database": "1",
-  "status": 200,
-  "correlation_id": "a1f8b29c4d7e",
-  "method": "GET",
-  "path": "/api/databases/1/tables/public/items/data",
-  "dur_ms": 12,
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "span_id": "00f067aa0ba902b7"
+  "trace_id": "8253f687e03dd309a0e02880ae8f3b06",
+  "span_id": "bbbd02d2f3c15c86",
+  "request_id": "demo-enqueue-batch-1"
 }
 ```
 
@@ -557,73 +570,132 @@ Mulai eksekusi, hasil eksekusi, serta commit/rollback dicatat secara terpisah:
 - **`sql_commit`** / **`sql_rollback`**: mencatat hasil penyelesaian transaksi beserta durasinya.
 - Jika terdapat metadata job/migration di context (`obs.WithJobContext`), log otomatis menambahkan `job_id`, `execution_id`, `migration_id`, `attempt`, dan `batch`.
 
-#### Contoh Output Log SQL:
-```json
-{
-  "time": "2026-11-20T11:15:30.130100Z",
-  "level": "INFO",
-  "msg": "sql_start",
-  "event": "sql_start",
-  "query": "SELECT * FROM items WHERE category = $1",
-  "params": ["buku"],
-  "database": "toko",
-  "actor": "bob",
-  "request_id": "a1f8b29c4d7e",
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "span_id": "5a3c9b21f0e47d12"
-}
-```
+#### Contoh Output Log SQL
+
+Output asli batch 1 dari job yang sama di worker: hasil eksekusi dan commit
+dicatat terpisah, lengkap dengan `job_id`, `execution_id`, `attempt`, dan
+`batch`. `trace_id` sama dengan request API di atas.
 
 ```json
 {
-  "time": "2026-11-20T11:15:30.134500Z",
+  "time": "2026-11-23T12:25:40.497228+07:00",
   "level": "INFO",
   "msg": "sql_result",
   "event": "sql_result",
-  "query": "SELECT * FROM items WHERE category = $1",
-  "params": ["buku"],
-  "dur_ms": 4,
-  "rows_affected": 0,
+  "query": "UPDATE produk SET harga = harga * 2 WHERE id > $1 AND id <= $2",
+  "database": "1",
+  "params": [0, 10000],
+  "dur_ms": 46,
+  "rows_affected": 10000,
   "status": "success",
-  "database": "toko",
-  "actor": "bob",
-  "request_id": "a1f8b29c4d7e",
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "span_id": "5a3c9b21f0e47d12"
+  "trace_id": "8253f687e03dd309a0e02880ae8f3b06",
+  "span_id": "7b716fd0502d30d3",
+  "job_id": 1,
+  "execution_id": 1,
+  "migration_id": 1,
+  "attempt": 1,
+  "batch": 1
 }
 ```
 
+```json
+{
+  "time": "2026-11-23T12:25:40.5134333+07:00",
+  "level": "INFO",
+  "msg": "sql_commit",
+  "event": "sql_commit",
+  "database": "1",
+  "dur_ms": 8,
+  "status": "success",
+  "trace_id": "8253f687e03dd309a0e02880ae8f3b06",
+  "span_id": "859804a77baf34d6",
+  "job_id": 1,
+  "execution_id": 1,
+  "migration_id": 1,
+  "attempt": 1,
+  "batch": 1
+}
+```
+
+Urutan lengkap log job ini (API, worker, lock, batch, hasil) ada di
+[`docs/observability.md`](docs/observability.md).
+
 ### 3. Tracing OpenTelemetry (`internal/obs/trace.go`)
 
-Tracing OpenTelemetry menghubungkan alur API &rarr; Queue &rarr; Worker &rarr; Lock &rarr; Database query.
-- **Trace Context Propagation**: fungsi `obs.InjectTraceParent(ctx)` mengekspor context ke format standar W3C `traceparent` (contoh: `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`) yang disimpan di kolom `jobs.trace_context` saat enqueue. Worker kemudian memanggil `obs.ExtractTraceParent(ctx, traceparent)` sehingga span di dalam worker menjadi anak dari trace yang diawali oleh request API.
-- **Span Exporter**: default menggunakan console/stdout (atau OTLP Collector saat stack observability dijalankan).
+Tracing OpenTelemetry menghubungkan alur API &rarr; Queue &rarr; Worker &rarr; Lock &rarr; Batch &rarr; Database query dalam satu trace.
 
-#### Contoh Struktur Span:
+| Span | Tempat | Atribut penting |
+|---|---|---|
+| `METHOD /path` | middleware HTTP | |
+| `queue.enqueue` | `approval.Store.Enqueue` | `db.id`, `migration.id`, `job.id`, `job.kind`, `job.mode` |
+| `job.process` | worker | `job.id`, `job.attempt`, `job.result` |
+| `migration.lock` | eksekusi biasa dan batch | `db.id`, `lock.scope` (`session` untuk batch), `lock.acquired` |
+| `migration.batch` | setiap batch (run dan revert) | `batch.no`, `batch.lower`, `batch.upper`, `batch.rows`, `batch.action` |
+| `db.*` | `LoggedDB`/`LoggedTx` | `db.statement` |
+
+- **Propagasi lewat queue**: span `queue.enqueue` menyimpan `traceparent` W3C
+  ke kolom `jobs.trace_context`. Worker memanggil `obs.ExtractTraceParent`, jadi
+  `job.process` menjadi anak `queue.enqueue` walaupun dijalankan di goroutine
+  atau proses lain.
+- **Durasi dan error**: setiap span mencatat durasinya; span yang gagal
+  berstatus `ERROR` dan mencatat exception (`obs.RecordError`).
+- **Exporter** (`OTEL_TRACES_EXPORTER`): `otlp` mengirim ke OpenTelemetry
+  Collector lewat OTLP/HTTP (`OTEL_EXPORTER_OTLP_ENDPOINT`, default
+  `http://localhost:4318`), `none` mematikan ekspor, selain itu console (stdout).
+- Diuji di `TestEnqueueSpanCarriesTraceContextToJob` dan
+  `TestBatchTracingLockAndPerBatchSpans`.
+
+#### Contoh span (output asli dari Jaeger)
+
+Trace job batch yang sama dengan contoh log di atas (32 span; `db.*` hanya
+ditampilkan untuk batch 1):
+
 ```
-Span: GET /api/databases/1/tables/public/items/data
- ├─ Span: db.query (statement: "SELECT count(*) FROM items")
- └─ Span: db.query (statement: "SELECT id, name FROM items ORDER BY id LIMIT 50")
+POST /api/databases/1/requests/1/enqueue  [25.9 ms]
+  queue.enqueue  [3.3 ms]  db.id=1 job.mode=batch job.id=1
+    job.process  [485.0 ms]  job.id=1 job.attempt=1 job.result=succeeded
+      migration.lock  [4.7 ms]  lock.scope=session lock.acquired=True
+      migration.batch  [65.8 ms]  batch.no=1 batch.lower=0 batch.upper=10000 batch.rows=10000
+        db.tx.exec  [46.3 ms]   (UPDATE produk ...)
+        db.tx.commit  [13.6 ms]  span_id=859804a77baf34d6  <- sama dengan log sql_commit di atas
+      migration.batch  [65.0 ms]  batch.no=2 ...
+      migration.batch  [62.9 ms]  batch.no=3 ...
+      migration.batch  [55.4 ms]  batch.no=4 ...
+      migration.batch  [54.3 ms]  batch.no=5 ...
 ```
+
+![Trace job batch di Jaeger](docs/img/jaeger-trace-batch.png)
 
 ### 4. Observability Stack (Collector, Prometheus, Grafana)
 
 Disediakan stack observability lengkap di `docker-compose.yml` di bawah profile `obs`:
-- **OpenTelemetry Collector**: menerima traces & logs OTLP gRPC/HTTP di port `4317` & `4318`.
-- **Jaeger**: visualisasi distributed trace di `http://localhost:16686`.
-- **Prometheus**: mengikis metrik aplikasi setiap 5 detik di `http://localhost:9090`.
-- **Grafana**: dashboard analitik terpusat di `http://localhost:3000` (user: `admin`, pass: `admin`).
+- **OpenTelemetry Collector**: menerima trace dan log OTLP (gRPC `4317`, HTTP `4318`), meneruskan trace ke Jaeger dan log ke Loki (`deploy/observability/otel-collector-config.yml`).
+- **Jaeger**: backend trace di `http://localhost:16686`.
+- **Loki**: backend log terpusat di `http://localhost:3100`. Atribut log (`trace_id`, `span_id`, `job_id`, `actor`, `event`, ...) disimpan sebagai structured metadata.
+- **Prometheus**: mengikis `/metrics` aplikasi setiap 5 detik di `http://localhost:9090`.
+- **Grafana**: `http://localhost:3000` (lihat tanpa login; edit dengan `admin`/`admin`). Datasource Prometheus, Jaeger, dan Loki diprovisioning, dengan korelasi dua arah: `trace_id` di log Loki menjadi tautan ke trace Jaeger, dan dari span Jaeger bisa membuka log Loki dengan `trace_id` yang sama.
+
+Log tetap selalu ditulis ke stdout. Dengan `OTEL_LOGS_EXPORTER=otlp`, record
+yang sama (sudah diperkaya `trace_id` dan sudah diredaksi) juga dikirim ke
+Collector lewat bridge `otelslog` (`internal/obs/logs.go`).
 
 #### Menjalankan Stack Observability:
 ```bash
-make obs-up          # Menjalankan otel-collector, jaeger, prometheus, dan grafana
-make obs-down        # Menghentikan stack observability
+make obs-up          # otel-collector, loki, jaeger, prometheus, grafana
+OTEL_TRACES_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 make run
+make obs-down        # menghentikan stack observability
 ```
+
+**Contoh hasil korelasi log, trace, dan metrik** untuk satu job batch (output
+asli, termasuk screenshot Jaeger dan dashboard Grafana) ada di
+[`docs/observability.md`](docs/observability.md).
 
 #### Endpoint Metrik Prometheus (`GET /metrics`)
 Aplikasi mengekspos metrik berformat Prometheus di `/metrics`:
 - **Queue/Job**:
-  - `dbp_jobs_total{db="...", status="..."}`: Jumlah total job per status (`queued`, `running`, `succeeded`, `failed`, `partial`, `uncertain`).
+  - `dbp_jobs{status="..."}` (gauge): jumlah job **saat ini** per status (`queued` menunggu, `running` berjalan, `succeeded`, `failed`, `uncertain`, `partial`, `partially_reverted`, `reverted`), dihitung dari tabel `jobs` setiap scrape sehingga tetap benar setelah restart.
+  - `dbp_jobs_total{db="...", status="..."}`: jumlah hasil job per status yang diproses worker sejak server menyala.
   - `dbp_job_retries_total{db="..."}`: Jumlah percobaan ulang job.
   - `dbp_batches_processed_total{db="..."}` & `dbp_rows_processed_total{db="..."}`: Jumlah batch dan row yang telah di-commit.
   - `dbp_queue_wait_seconds`: Waktu tunggu antrean job.
@@ -636,7 +708,15 @@ Aplikasi mengekspos metrik berformat Prometheus di `/metrics`:
   - `dbp_pool_max_open_connections{db_id="..."}`: Batas maksimal koneksi pool.
   - `dbp_pool_wait_count_total{db_id="..."}` & `dbp_pool_wait_duration_seconds_total{db_id="..."}`: Statistik antrean menunggu koneksi.
 
-Dashboard Grafana telah diprovisioning otomatis dari file `deploy/observability/grafana/dashboards/dbplatform.json`.
+Label dibatasi pada nilai yang jumlahnya terbatas (`status`, `db`/`db_id`);
+ID user, ID job, dan SQL tidak pernah menjadi label.
+
+Dashboard Grafana diprovisioning otomatis dari
+`deploy/observability/grafana/dashboards/dbplatform.json`: job per status,
+retry, waktu tunggu antrean dan lock, durasi migration, progres batch/row,
+koneksi pool open/in-use/idle, waktu tunggu koneksi, dan panel log Loki.
+
+![Dashboard Grafana](docs/img/grafana-dashboard.png)
 
 ### 5. Frontend Single-Page Application (SPA)
 
@@ -647,7 +727,10 @@ Antarmuka dipindahkan ke SPA berbasis React + TypeScript di folder `frontend/`:
 - **Ringkasan Schema**: Mengelompokkan relasi berdasarkan schema dengan badge tipe (`tabel`, `view`, `materialized view`, `foreign table`, dsb.).
 - **Detail Struktur Tabel**: Kolom (tipe, nullable, default), Constraint (PK, FK, Unique, Check), dan Index.
 - **Data Viewer Berpagination**: Pagination default 50 baris (dapat dipilih 10, 25, 50, 100, 200), indikator total baris dan estimasi, serta penanganan sel `NULL` dan teks panjang.
-- **Responsivitas**: Komponen tabel lebar memiliki pembungkus scroll horizontal internal (`.table-responsive-wrapper`) sehingga tidak merusak lebar layout halaman baik pada mobile (360px) maupun desktop (1280px).
+- **Responsivitas**: Komponen tabel lebar memiliki pembungkus scroll horizontal internal (`.table-responsive-wrapper`), SQL di `<pre>` dan editor punya scroll sendiri, sehingga tidak merusak lebar layout halaman baik pada mobile (360px) maupun desktop (1280px).
+- **Hasil uji responsif** (23 November 2026, Chrome headless lewat DevTools Protocol): 20 halaman SPA (login, daftar database, schema, struktur dan data tabel, migration, detail migration, schema diff, riwayat, job, detail job batch, request, detail request, admin user/group/koneksi) diukur pada lebar 360 px dan 1280 px. Di semua halaman lebar dokumen tidak melebihi lebar layar (tidak ada scroll horizontal di level halaman) dan tidak ada tombol, input, atau select yang berada di luar layar. Contoh tampilan 360 px:
+
+  ![SPA di layar 360 px](docs/img/spa-mobile-360.png)
 
 Untuk menjalankan frontend dev server:
 ```bash

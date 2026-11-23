@@ -1,11 +1,17 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"database/sql"
+	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
 	"github.com/zizadhrmaa/DB-Platform/internal/approval"
@@ -35,6 +41,8 @@ type App struct {
 	MetricsToken  string
 	MetricsStrict bool
 	DirectExecute bool
+	// LegacyHTML mendaftarkan halaman template Go Milestone 1 (hanya test).
+	LegacyHTML bool
 }
 
 func (app *App) metrics() http.Handler {
@@ -51,7 +59,31 @@ func (app *App) metrics() http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+		app.writeJobGauge(w, r)
 	})
+}
+
+// writeJobGauge menambahkan gauge dbp_jobs{status} berisi jumlah job saat
+// ini per status, dihitung dari tabel jobs saat di-scrape. Label hanya
+// status (nilainya terbatas), tanpa ID job atau database.
+func (app *App) writeJobGauge(w http.ResponseWriter, r *http.Request) {
+	if app.Jobs == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	counts, err := app.Jobs.CountByStatus(ctx)
+	if err != nil {
+		slog.WarnContext(r.Context(), "gagal menghitung job untuk metrik", "event", "metrics.jobs_error", "err", err)
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("\n# HELP dbp_jobs Jumlah job migration saat ini per status (menunggu, berjalan, selesai, gagal, dst).\n")
+	sb.WriteString("# TYPE dbp_jobs gauge\n")
+	for _, st := range queue.AllStatuses {
+		fmt.Fprintf(&sb, "dbp_jobs{status=%q} %d\n", string(st), counts[st])
+	}
+	_, _ = io.WriteString(w, sb.String())
 }
 
 func (app *App) directExecute() http.Handler {
@@ -76,24 +108,50 @@ func (app *App) routes() http.Handler {
 	adminOnly := func(h http.Handler) http.Handler { return login(authz.RequireAdmin(h)) }
 	db := func(a authz.Action, h http.Handler) http.Handler { return login(authz.RequireDB(app.Authz, a, h)) }
 
-	mux.HandleFunc("GET /login", app.loginPage)
-	mux.HandleFunc("POST /login", app.login)
-	mux.Handle("POST /logout", login(http.HandlerFunc(app.logout)))
-
 	mux.Handle("GET /{$}", login(http.RedirectHandler("/app/", http.StatusSeeOther)))
 	mux.Handle("GET /app", http.RedirectHandler("/app/", http.StatusPermanentRedirect))
 	mux.Handle("GET /app/", spaHandler())
 	app.registerAPIRoutes(mux)
 
-	mux.Handle("GET /databases", login(http.HandlerFunc(app.databaseList)))
-	mux.Handle("GET /databases/{dbID}", db(authz.ActionViewSchema, http.HandlerFunc(app.databaseShow)))
-	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.tableShow)))
-	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.tableData)))
-
 	mux.Handle("GET /api/databases", login(http.HandlerFunc(app.apiDatabaseList)))
 	mux.Handle("GET /api/databases/{dbID}", db(authz.ActionViewSchema, http.HandlerFunc(app.apiDatabaseShow)))
 	mux.Handle("GET /api/databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.apiTableShow)))
 	mux.Handle("GET /api/databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.apiTableData)))
+
+	// Frontend Milestone 2 adalah SPA. Halaman template Go dari Milestone 1
+	// hanya didaftarkan jika LegacyHTML (dipakai test handler lama); secara
+	// default URL lama dialihkan ke halaman SPA yang setara.
+	if app.LegacyHTML {
+		app.registerLegacyHTML(mux, login, adminOnly, db)
+	} else {
+		registerSPARedirects(mux)
+	}
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		httpx.ErrorRenderer(w, r, http.StatusNotFound, httpx.PublicMessage(http.StatusNotFound))
+	})
+	return mux
+}
+
+func (app *App) todo(route string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		app.View.Render(w, r, http.StatusNotImplemented, "placeholder", view.PageData{
+			Title: "Belum diimplementasikan",
+			Data:  map[string]string{"Route": route},
+		})
+	})
+}
+
+// registerLegacyHTML mendaftarkan halaman template Go Milestone 1.
+func (app *App) registerLegacyHTML(mux *http.ServeMux, login, adminOnly func(http.Handler) http.Handler, db func(authz.Action, http.Handler) http.Handler) {
+	mux.HandleFunc("GET /login", app.loginPage)
+	mux.HandleFunc("POST /login", app.login)
+	mux.Handle("POST /logout", login(http.HandlerFunc(app.logout)))
+
+	mux.Handle("GET /databases", login(http.HandlerFunc(app.databaseList)))
+	mux.Handle("GET /databases/{dbID}", db(authz.ActionViewSchema, http.HandlerFunc(app.databaseShow)))
+	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}", db(authz.ActionViewSchema, http.HandlerFunc(app.tableShow)))
+	mux.Handle("GET /databases/{dbID}/tables/{schema}/{table}/data", db(authz.ActionViewData, http.HandlerFunc(app.tableData)))
 
 	mux.Handle("GET /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("form query read-only")))
 	mux.Handle("POST /databases/{dbID}/query", db(authz.ActionRunReadQuery, app.todo("jalankan query read-only")))
@@ -134,18 +192,41 @@ func (app *App) routes() http.Handler {
 	mux.Handle("POST /admin/databases/{dbID}", adminOnly(http.HandlerFunc(app.adminUpdateConnection)))
 	mux.Handle("POST /admin/databases/{dbID}/test", adminOnly(http.HandlerFunc(app.adminTestConnection)))
 	mux.Handle("POST /admin/databases/{dbID}/delete", adminOnly(http.HandlerFunc(app.adminDeleteConnection)))
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		httpx.ErrorRenderer(w, r, http.StatusNotFound, httpx.PublicMessage(http.StatusNotFound))
-	})
-	return mux
 }
 
-func (app *App) todo(route string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		app.View.Render(w, r, http.StatusNotImplemented, "placeholder", view.PageData{
-			Title: "Belum diimplementasikan",
-			Data:  map[string]string{"Route": route},
+// registerSPARedirects mengalihkan URL halaman Milestone 1 ke halaman SPA
+// yang setara, supaya bookmark lama tetap berguna dan tidak ada tampilan
+// non-SPA yang tersisa. Route POST form lama tidak didaftarkan (SPA memakai
+// /api). Tujuan selalu diawali /app/, jadi bukan open redirect.
+func registerSPARedirects(mux *http.ServeMux) {
+	to := func(target func(r *http.Request) string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			dst := target(r)
+			if r.URL.RawQuery != "" {
+				dst += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, dst, http.StatusFound)
 		})
-	})
+	}
+	same := to(func(r *http.Request) string { return "/app" + r.URL.Path })
+	dbPath := func(r *http.Request) string { return "/app/databases/" + url.PathEscape(r.PathValue("dbID")) }
+	for _, p := range []string{
+		"GET /login", "GET /databases", "GET /databases/{dbID}",
+		"GET /databases/{dbID}/tables/{schema}/{table}", "GET /databases/{dbID}/tables/{schema}/{table}/data",
+		"GET /databases/{dbID}/migrations", "GET /databases/{dbID}/migrations/diff",
+		"GET /databases/{dbID}/migrations/{migrationID}",
+		"GET /admin", "GET /admin/users", "GET /admin/users/{userID}", "GET /admin/groups", "GET /admin/groups/{groupID}",
+	} {
+		mux.Handle(p, same)
+	}
+	mux.Handle("GET /databases/{dbID}/migrations/new", to(func(r *http.Request) string { return dbPath(r) + "/migrations" }))
+	mux.Handle("GET /databases/{dbID}/migrations/{migrationID}/edit", to(func(r *http.Request) string {
+		return dbPath(r) + "/migrations/" + url.PathEscape(r.PathValue("migrationID"))
+	}))
+	mux.Handle("GET /admin/users/new", to(func(*http.Request) string { return "/app/admin/users" }))
+	mux.Handle("GET /admin/databases", to(func(*http.Request) string { return "/app/admin/connections" }))
+	mux.Handle("GET /admin/databases/new", to(func(*http.Request) string { return "/app/admin/connections/new" }))
+	mux.Handle("GET /admin/databases/{dbID}", to(func(r *http.Request) string {
+		return "/app/admin/connections/" + url.PathEscape(r.PathValue("dbID"))
+	}))
 }

@@ -1,3 +1,6 @@
+# OpenTelemetry Collector: menerima trace dan log dari aplikasi lewat OTLP,
+# lalu meneruskan trace ke Jaeger dan log ke Loki.
+# Aplikasi mengirim dengan OTEL_TRACES_EXPORTER=otlp dan OTEL_LOGS_EXPORTER=otlp.
 receivers:
   otlp:
     protocols:
@@ -15,8 +18,15 @@ exporters:
     endpoint: jaeger:4317
     tls:
       insecure: true
+  # Loki 3.x menerima OTLP langsung; atribut log (trace_id, job_id, actor,
+  # ...) disimpan sebagai structured metadata, service.name menjadi label
+  # service_name.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
   debug:
-    verbosity: detailed
+    verbosity: basic
 
 service:
   pipelines:
@@ -24,3 +34,7 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlp/jaeger, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki, debug]

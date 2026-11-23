@@ -471,3 +471,31 @@ func isUniqueViolation(err error) bool {
 	var pe *pgconn.PgError
 	return errors.As(err, &pe) && pe.Code == "23505"
 }
+
+// AllStatuses adalah semua status job, urutan tetap (untuk metrik).
+var AllStatuses = []Status{StatusQueued, StatusRunning, StatusSucceeded, StatusFailed,
+	StatusUncertain, StatusPartial, StatusPartiallyReverted, StatusReverted}
+
+// CountByStatus menghitung job saat ini per status. Status tanpa job
+// bernilai 0. Dipakai metrik dbp_jobs (gauge) supaya jumlah job menunggu
+// atau berjalan tetap benar walaupun server restart.
+func (s *Store) CountByStatus(ctx context.Context) (map[Status]int64, error) {
+	out := make(map[Status]int64, len(AllStatuses))
+	for _, st := range AllStatuses {
+		out[st] = 0
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT status, count(*) FROM jobs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st Status
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		out[st] = n
+	}
+	return out, rows.Err()
+}

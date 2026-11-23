@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) http.Handler {
 		Levels: map[authz.Key]domain.AccessLevel{{UserID: 1, DBID: 10}: domain.AccessView},
 		Names:  map[int64]string{10: "Toko <script>"},
 	}
-	app := &App{View: r, Authz: az}
+	app := &App{View: r, Authz: az, LegacyHTML: true}
 	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders)
 }
 
