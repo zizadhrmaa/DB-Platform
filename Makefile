@@ -17,7 +17,7 @@ test-unit:     ## unit test saja
 
 test-integration: ## unit + integration test terhadap test-db dan target-mysql
 	docker compose up -d --wait test-db target-mysql
-	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TEST_MYSQL_DATABASE_URL="$(TEST_MYSQL_DATABASE_URL)" go test -count=1 ./...
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TEST_MYSQL_DATABASE_URL="$(TEST_MYSQL_DATABASE_URL)" go test -p 1 -count=1 ./...
 
 test: test-integration
 

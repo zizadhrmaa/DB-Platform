@@ -23,6 +23,10 @@ jobs:
         with: { go-version: "1.24" }
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
-      - run: go test -count=1 -race ./...
+      # -p 1: paket test berbagi satu database PostgreSQL, sedangkan advisory
+      # lock eksekusi migration berlaku per database (bukan per schema),
+      # jadi paket yang berjalan paralel saling berebut lock fixture db_id
+      # yang sama. Test di dalam satu paket tetap terisolasi per schema.
+      - run: go test -p 1 -count=1 -race ./...
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
