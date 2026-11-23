@@ -81,6 +81,9 @@ type BatchOptions struct {
 	Action  BatchAction
 	Timeout time.Duration // statement_timeout per batch; 0 = 60 detik
 	// OnStart: lihat ExecOptions.OnStart. Hanya dipanggil untuk BatchRun.
+	// Attempt BatchRevert tetap dicatat di migration_runs dan
+	// migration_history, tetapi tidak dipasang ke job: job revert yang
+	// terputus cukup diantrekan ulang dan melanjutkan dari checkpoint.
 	OnStart func(ctx context.Context, tx *sql.Tx, runID int64) error
 	// OnBatch dipanggil setelah setiap batch committed atau dibatalkan.
 	// Error menghentikan job (misalnya lease hilang); batch berikutnya tidak
@@ -166,7 +169,7 @@ func (s *Store) ExecuteBatch(ctx context.Context, u *domain.User, dbID, id int64
 	}
 	b.column = pgx.Identifier{m.BatchColumn}.Sanitize()
 	if opt.Action == BatchRevert {
-		return b.revert(base)
+		return b.revert(base, u)
 	}
 	return b.run(base, u)
 }
@@ -344,10 +347,106 @@ func (b *batchRun) apply(ctx context.Context, sqlText string, lower, upper int64
 	return n, ltx.CommitContext(ctx)
 }
 
+const revertInterruptedMessage = "Pembatalan batch terputus sebelum selesai; batch yang sudah dibatalkan tercatat di checkpoint dan dilanjutkan attempt berikutnya."
+
+// startRevert mencatat attempt pembatalan batch sebagai eksekusi rollback
+// baru di migration_runs, dengan salinan SQL down dan rujukan ke eksekusi
+// batch yang dibatalkan. Status migration tidak diubah: pembatalan batch
+// adalah kompensasi untuk job partial, bukan rollback migration aktif.
+//
+// Attempt pembatalan sebelumnya yang masih running (worker mati di tengah)
+// ditutup sebagai gagal dulu. Aman karena lock session target sedang
+// dipegang pemanggil, jadi tidak ada attempt lain yang masih berjalan.
+func (s *Store) startRevert(ctx context.Context, u *domain.User, dbID int64, m *Migration) (int64, error) {
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return 0, e
+	}
+	defer tx.Rollback()
+	stale, e := tx.QueryContext(ctx, `
+		UPDATE migration_runs SET status='failed', finished_at=now(), error_message=$2
+		WHERE migration_id=$1 AND kind='rollback' AND status='running' RETURNING id`, m.ID, revertInterruptedMessage)
+	if e != nil {
+		return 0, e
+	}
+	var staleIDs []int64
+	for stale.Next() {
+		var id int64
+		if e = stale.Scan(&id); e != nil {
+			stale.Close()
+			return 0, e
+		}
+		staleIDs = append(staleIDs, id)
+	}
+	e = stale.Err()
+	stale.Close()
+	if e != nil {
+		return 0, e
+	}
+	for _, id := range staleIDs {
+		if e = appendHistory(ctx, tx, id); e != nil {
+			return 0, e
+		}
+	}
+	var reverts int64
+	e = tx.QueryRowContext(ctx, `
+		SELECT id FROM migration_runs WHERE migration_id=$1 AND kind IN ('up','forward')
+		ORDER BY id DESC LIMIT 1`, m.ID).Scan(&reverts)
+	if errors.Is(e, sql.ErrNoRows) {
+		return 0, fmt.Errorf("%w: eksekusi batch yang akan dibatalkan tidak ditemukan", domain.ErrConflict)
+	}
+	if e != nil {
+		return 0, e
+	}
+	var runID int64
+	e = tx.QueryRowContext(ctx, `
+		INSERT INTO migration_runs(migration_id,kind,revision,reverts_run_id,sql_text,executed_by,status)
+		SELECT id,'rollback',revision,$2,sql_down,$3,'running' FROM migrations WHERE id=$1 AND db_id=$4
+		RETURNING id`, m.ID, reverts, u.ID, dbID).Scan(&runID)
+	if e != nil {
+		return 0, e
+	}
+	return runID, tx.Commit()
+}
+
 // revert membatalkan batch committed dengan SQL down dalam urutan batch
 // terbalik. Setiap pembatalan satu transaction bersama penanda reverted_at
 // (checkpoint pembatalan), jadi revert yang terhenti bisa dilanjutkan.
-func (b *batchRun) revert(ctx context.Context) (*BatchResult, error) {
+// Setiap pemanggilan dicatat sebagai satu attempt rollback di migration
+// history, berhasil maupun gagal.
+func (b *batchRun) revert(ctx context.Context, u *domain.User) (*BatchResult, error) {
+	res := &BatchResult{}
+	runID, err := b.s.startRevert(ctx, u, b.dbID, b.m)
+	if err != nil {
+		return nil, err
+	}
+	res.RunID = runID
+	ctx = obs.WithJobContext(ctx, obs.JobContext{ExecutionID: runID})
+	slog.InfoContext(ctx, "attempt pembatalan batch dimulai", "event", "migration.attempt_start",
+		"db_id", b.dbID, "kind", KindRollback, "user", u.Username, "sql", b.m.SQLDown)
+	settleRun := func(result Status, msg string) {
+		book, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		if _, e := b.s.finishRun(book, b.m.ID, b.dbID, runID, result, msg, nil); e != nil {
+			slog.ErrorContext(ctx, "gagal mencatat hasil attempt pembatalan batch", "event", "migration.attempt_record_error", "err", e)
+		}
+	}
+	out, err := b.revertBatches(ctx)
+	switch {
+	case err != nil:
+		settleRun(StatusFailed, errorMessage(err))
+	case out.Status == BatchReverted:
+		settleRun(StatusSuccess, "")
+	default:
+		settleRun(StatusFailed, out.Message)
+	}
+	if out != nil {
+		out.RunID = runID
+	}
+	return out, err
+}
+
+func (b *batchRun) revertBatches(ctx context.Context) (*BatchResult, error) {
 	res := &BatchResult{}
 	rows, err := b.conn.QueryContext(ctx, `
 		SELECT batch_no, lower_bound, upper_bound FROM _dbplatform_batches

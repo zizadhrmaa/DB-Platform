@@ -563,25 +563,18 @@ func (s *Store) runByID(ctx context.Context, migrationID, runID int64) (*Run, er
 }
 
 // History mengembalikan riwayat eksekusi database, urut waktu mulai.
-// Eksekusi committed diambil dari migration_history (tidak bisa diubah),
-// attempt yang gagal dari migration_runs supaya kegagalan tetap terlihat.
-// Dengan hideRollback, pasangan eksekusi yang dibatalkan dan rollback
-// suksesnya disembunyikan; datanya sendiri tidak berubah.
+// Semua attempt yang sudah selesai, berhasil maupun gagal, diambil dari
+// migration_history (tidak bisa diubah). Dengan hideRollback, pasangan
+// eksekusi yang dibatalkan dan rollback suksesnya disembunyikan; datanya
+// sendiri tidak berubah.
 func (s *Store) History(ctx context.Context, dbID int64, hideRollback bool) ([]HistoryEntry, error) {
 	rows, e := s.DB.QueryContext(ctx, `
-		SELECT h.execution_id, h.migration_id, h.version, h.revision, h.title, h.kind, 'success',
-		       h.sql_text, h.executed_by_username, h.started_at, h.committed_at, h.reverts_execution_id, ''
+		SELECT h.execution_id, h.migration_id, h.version, h.revision, h.title, h.kind, h.status,
+		       h.sql_text, h.executed_by_username, h.started_at, h.committed_at, h.reverts_execution_id,
+		       COALESCE(h.error_message,'')
 		FROM migration_history h
 		WHERE h.db_id = $1
-		UNION ALL
-		SELECT r.id, m.id, m.version, r.revision, m.title, r.kind, r.status,
-		       r.sql_text, COALESCE(u.username,''), r.started_at, r.finished_at, r.reverts_run_id,
-		       COALESCE(r.error_message,'')
-		FROM migration_runs r
-		JOIN migrations m ON m.id = r.migration_id
-		LEFT JOIN users u ON u.id = r.executed_by
-		WHERE m.db_id = $1 AND r.status = 'failed'
-		ORDER BY 10, 1`, dbID)
+		ORDER BY h.started_at, h.execution_id`, dbID)
 	if e != nil {
 		return nil, e
 	}
@@ -722,18 +715,25 @@ func settle(ctx context.Context, tx *sql.Tx, id, dbID, runID int64, result Statu
 	if e != nil {
 		return e
 	}
-	if result != StatusSuccess {
-		return nil
-	}
-	_, e = tx.ExecContext(ctx, `
+	return appendHistory(ctx, tx, runID)
+}
+
+// appendHistory menyalin attempt runID yang sudah selesai (success atau
+// failed) ke migration_history. Dipanggil dalam transaction yang sama
+// dengan perubahan status attempt, sehingga setiap attempt yang selesai
+// pasti tercatat tepat sekali.
+func appendHistory(ctx context.Context, tx *sql.Tx, runID int64) error {
+	_, e := tx.ExecContext(ctx, `
 		INSERT INTO migration_history (execution_id, db_id, migration_id, version, revision, title, kind,
-		                               sql_text, executed_by, executed_by_username, started_at, reverts_execution_id)
+		                               sql_text, executed_by, executed_by_username, started_at, committed_at,
+		                               reverts_execution_id, status, error_message)
 		SELECT r.id, m.db_id, m.id, m.version, r.revision, m.title, r.kind,
-		       r.sql_text, r.executed_by, COALESCE(u.username,''), r.started_at, r.reverts_run_id
+		       r.sql_text, r.executed_by, COALESCE(u.username,''), r.started_at, COALESCE(r.finished_at, now()),
+		       r.reverts_run_id, r.status, r.error_message
 		FROM migration_runs r
 		JOIN migrations m ON m.id = r.migration_id
 		LEFT JOIN users u ON u.id = r.executed_by
-		WHERE r.id = $1`, runID)
+		WHERE r.id = $1 AND r.status IN ('success','failed')`, runID)
 	return e
 }
 

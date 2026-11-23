@@ -174,6 +174,32 @@ func TestBatchRevertInReverseOrderAndContinuesAfterPartialFailure(t *testing.T) 
 	if len(order) != 3 || order[0] != 3 || order[1] != 2 || order[2] != 1 {
 		t.Fatalf("urutan pembatalan harus terbalik, dapat %v", order)
 	}
+
+	// Setiap attempt tercatat di migration history: run batch (partial,
+	// failed), revert pertama (failed), revert lanjutan (success). Kedua
+	// revert merujuk execution ID run batch dan memakai SQL down.
+	hist, err := env.store.History(context.Background(), env.dbID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 3 || hist[0].Kind != KindUp || hist[0].Status != StatusFailed {
+		t.Fatalf("riwayat batch harus 3 attempt diawali run batch gagal: %+v", hist)
+	}
+	for i, h := range hist[1:] {
+		if h.Kind != KindRollback || h.SQL != downSub || h.RevertsExecutionID == nil || *h.RevertsExecutionID != hist[0].ExecutionID {
+			t.Fatalf("attempt revert %d tidak tercatat benar: %+v", i+1, h)
+		}
+	}
+	if hist[1].Status != StatusFailed || !strings.Contains(hist[1].ErrorMessage, "batch 2") || hist[2].Status != StatusSuccess {
+		t.Fatalf("status attempt revert salah: %+v", hist[1:])
+	}
+	// Hide rollback tidak menyembunyikan kegagalan batch maupun pembatalannya.
+	if hidden, _ := env.store.History(context.Background(), env.dbID, true); len(hidden) != 3 {
+		t.Fatalf("hide rollback tidak boleh menyembunyikan attempt batch gagal: %+v", hidden)
+	}
+	if st := env.status(t, m.ID).Status; st != StatusFailed {
+		t.Fatalf("revert batch tidak mengubah status migration, dapat %s", st)
+	}
 }
 
 // Lock target tetap dipegang di antara commit batch: eksekusi lain di

@@ -348,9 +348,8 @@ func LatestApplied(runs []Run) (Run, bool) {
 	return *best, true
 }
 
-// HistoryEntry adalah satu baris riwayat eksekusi. Eksekusi yang committed
-// berasal dari migration_history (tidak bisa diubah); attempt yang gagal
-// berasal dari migration_runs supaya kegagalan tetap terlihat.
+// HistoryEntry adalah satu baris riwayat eksekusi dari migration_history
+// (tidak bisa diubah), berisi attempt yang berhasil maupun gagal.
 type HistoryEntry struct {
 	ExecutionID        int64
 	MigrationID        int64
@@ -371,9 +370,18 @@ type HistoryEntry struct {
 // sukses yang membatalkannya. Pasangan ditentukan dari execution ID, bukan
 // nama migration. Attempt yang gagal tetap ditampilkan.
 func HideRolledBack(entries []HistoryEntry) []HistoryEntry {
+	// Hanya eksekusi sukses yang bisa "dibatalkan". Revert batch merujuk
+	// attempt batch yang gagal (partial); kegagalan itu dan pembatalannya
+	// tetap ditampilkan.
+	succeeded := map[int64]bool{}
+	for _, e := range entries {
+		if e.Status == StatusSuccess {
+			succeeded[e.ExecutionID] = true
+		}
+	}
 	hidden := map[int64]bool{}
 	for _, e := range entries {
-		if e.Kind == KindRollback && e.Status == StatusSuccess && e.RevertsExecutionID != nil {
+		if e.Kind == KindRollback && e.Status == StatusSuccess && e.RevertsExecutionID != nil && succeeded[*e.RevertsExecutionID] {
 			hidden[e.ExecutionID] = true
 			hidden[*e.RevertsExecutionID] = true
 		}

@@ -212,8 +212,8 @@ func (app *App) writeMigration(w http.ResponseWriter, r *http.Request, dbID, id 
 }
 
 // apiHistory: GET /api/databases/{dbID}/history?hide_rollback=true
-// Riwayat eksekusi: semua yang committed (tidak bisa diubah) dan attempt
-// yang gagal. hide_rollback menyembunyikan pasangan eksekusi yang dibatalkan
+// Riwayat eksekusi dari migration_history: semua attempt, berhasil maupun
+// gagal. hide_rollback menyembunyikan pasangan eksekusi yang dibatalkan
 // dan rollback suksesnya berdasarkan execution ID.
 func (app *App) apiHistory(w http.ResponseWriter, r *http.Request) {
 	dbID, err := httpx.PathID(r, "dbID")
