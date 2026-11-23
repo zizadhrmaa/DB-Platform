@@ -37,59 +37,90 @@ export const DatabaseListPage: React.FC = () => {
     );
   }
 
+  // Tampilan mengikuti halaman daftar database Milestone 1
+  // (web/templates/pages/databases/list.html).
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+    <section className="peach-workspace">
+      <div className="peach-hero">
         <div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700 }}>Daftar Database</h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            Pilih database untuk melihat ringkasan schema, struktur tabel, dan isi data.
+          <p className="peach-eyebrow">✿ PENGELOLAAN DATABASE</p>
+          <h1>Selamat Datang di DB Platform</h1>
+          <p className="peach-description">
+            Kelola database, lihat struktur tabel, dan jalankan migrasi melalui satu platform yang terintegrasi.
           </p>
         </div>
-        <div>
-          <input
-            type="text"
-            placeholder="Cari database..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{
-              padding: '0.5rem 0.75rem',
-              borderRadius: '6px',
-              border: '1px solid var(--border-color)',
-              backgroundColor: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              fontSize: '0.875rem',
-            }}
-          />
+        <div className="peach-hero-icon" aria-hidden="true">
+          ✿
         </div>
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
-          {databases.length === 0 ? 'Belum ada database yang dapat diakses.' : 'Tidak ada database yang cocok.'}
+      {databases.length === 0 ? (
+        <div className="peach-empty-state">
+          <div aria-hidden="true">✿</div>
+          <h2>Belum Ada Database</h2>
+          <p>
+            Anda belum memiliki akses ke database. Silakan hubungi Platform Admin untuk mendapatkan hak akses yang
+            sesuai.
+          </p>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
-          {filtered.map((db) => (
-            <div key={db.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                  <h2 style={{ fontSize: '1.2rem', fontWeight: 600 }}>{db.name}</h2>
-                  <span className={`badge badge-${db.db_type}`}>{db.db_type}</span>
-                </div>
-                <div style={{ marginBottom: '1rem' }}>
-                  <span className={`badge ${db.level === 'edit' ? 'badge-edit' : 'badge-view'}`}>
-                    {db.level === 'edit' ? 'View + Edit' : 'View Only'}
-                  </span>
-                </div>
-              </div>
-              <Link to={`/databases/${db.id}`} className="btn btn-primary" style={{ width: '100%' }}>
-                Buka Schema Viewer
-              </Link>
+        <>
+          <div className="peach-section-heading">
+            <div>
+              <h2>Daftar Database</h2>
+              <p>Database yang dapat Anda akses sesuai hak akses yang diberikan.</p>
             </div>
-          ))}
-        </div>
+            <input
+              className="input"
+              type="search"
+              placeholder="Cari database..."
+              aria-label="Cari database"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="peach-empty-state">
+              <p>Tidak ada database yang cocok dengan pencarian.</p>
+            </div>
+          ) : (
+            <div className="peach-db-grid">
+              {filtered.map((db) => (
+                <article key={db.id} className="peach-db-card">
+                  <div className="peach-card-top">
+                    <div className="peach-db-icon" aria-hidden="true">
+                      ▤
+                    </div>
+                    <div className="peach-card-badges">
+                      <span className={`badge ${db.level === 'edit' ? 'badge-edit' : 'badge-view'}`}>
+                        {db.level === 'edit' ? 'View + Edit' : 'View Only'}
+                      </span>
+                      <span className={`badge badge-${db.db_type}`}>
+                        {db.db_type === 'mysql' ? 'MySQL' : 'PostgreSQL'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="peach-card-info">
+                    <h3>{db.name}</h3>
+                    <p>Database {db.db_type === 'mysql' ? 'MySQL' : 'PostgreSQL'}</p>
+                  </div>
+                  <Link className="peach-open-button" to={`/databases/${db.id}`}>
+                    Buka Database <span aria-hidden="true">→</span>
+                  </Link>
+                </article>
+              ))}
+              <aside className="peach-decoration-card">
+                <div className="peach-decoration-icon" aria-hidden="true">
+                  ✿
+                </div>
+                <h3>Pengelolaan Terintegrasi</h3>
+                <p>Akses informasi tabel, kelola hak akses, dan tinjau riwayat migrasi database.</p>
+              </aside>
+            </div>
+          )}
+        </>
       )}
-    </div>
+    </section>
   );
 };
