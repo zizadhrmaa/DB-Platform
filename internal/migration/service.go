@@ -12,10 +12,13 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 )
 
 type Store struct {
@@ -305,13 +308,21 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 			return nil, dbmanager.SanitizeError(e)
 		}
 	}
-	locked, e := tryLockTarget(work, tx, dbID, isMy)
+	lockStart := time.Now()
+	lockCtx, lockSpan := obs.StartSpan(work, "migration.lock", trace.WithAttributes(attribute.Int64("db.id", dbID)))
+	locked, e := tryLockTarget(lockCtx, tx, dbID, isMy)
+	obs.RecordLockWait(time.Since(lockStart))
+	obs.RecordError(lockSpan, e)
+	lockSpan.End()
 	if e != nil {
+		slog.WarnContext(work, "lock database target gagal diambil", "event", "migration.lock", "status", "error", "db_id", dbID)
 		return nil, e
 	}
 	if !locked {
+		slog.WarnContext(work, "lock database target dipegang migration lain", "event", "migration.lock", "status", "busy", "db_id", dbID)
 		return nil, ErrTargetBusy
 	}
+	slog.InfoContext(work, "lock database target diambil", "event", "migration.lock", "status", "acquired", "db_id", dbID)
 	if isMy {
 		defer unlockTarget(work, tx, dbID, isMy)
 	}
@@ -323,6 +334,18 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 	if e != nil {
 		return nil, e
 	}
+	// Semua log setelah ini membawa execution ID attempt ini.
+	jc := obs.JobContext{ExecutionID: runID, MigrationID: id}
+	base, work = obs.WithJobContext(base, jc), obs.WithJobContext(work, jc)
+	slog.InfoContext(work, "attempt migration dimulai", "event", "migration.attempt_start",
+		"db_id", dbID, "version", version, "user", u.Username, "sql", sqlText)
+
+	// Pencatatan hasil memakai context sendiri: work bisa saja sudah habis
+	// karena timeout eksekusi.
+	book, cancelBook := context.WithTimeout(base, 15*time.Second)
+	defer cancelBook()
+
+	ltx := dbmanager.WrapTx(tx, dbID, "")
 
 	execErr := func() error {
 		historyTableSQL := `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`
@@ -331,24 +354,21 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 			historyTableSQL = `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INT PRIMARY KEY,applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`
 			insertSQL = `INSERT INTO _dbplatform_history(version) VALUES(?)`
 		}
-		if _, e := tx.ExecContext(work, historyTableSQL); e != nil {
+		if _, e := ltx.ExecContext(work, historyTableSQL); e != nil {
 			return e
 		}
-		if _, e := tx.ExecContext(work, insertSQL, version); e != nil {
+		if _, e := ltx.ExecContext(work, insertSQL, version); e != nil {
 			return e
 		}
-		_, e := tx.ExecContext(work, sqlText)
+		_, e := ltx.ExecContext(work, sqlText)
 		return e
 	}()
 	var commitErr error
 	if execErr == nil {
-		commitErr = s.commitTx(tx)
+		commitErr = s.commitTx(book, tx, ltx)
+	} else {
+		_ = ltx.RollbackContext(book)
 	}
-
-	// Pencatatan hasil memakai context sendiri: work bisa saja sudah habis
-	// karena timeout eksekusi.
-	book, cancelBook := context.WithTimeout(base, 15*time.Second)
-	defer cancelBook()
 
 	switch {
 	case execErr == nil && commitErr == nil:
@@ -367,7 +387,8 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 
 	// COMMIT tanpa jawaban. Periksa bukti di target sebelum memutuskan.
 	if !s.verifyAfterCommit(book, dbID, isMy) {
-		slog.Warn("hasil commit migration belum pasti", "db_id", dbID, "migration_id", id, "run_id", runID)
+		slog.WarnContext(book, "hasil attempt migration belum pasti", "event", "migration.attempt_result",
+			"status", "uncertain", "db_id", dbID, "error", "COMMIT tidak dijawab dan bukti belum bisa diperiksa")
 		run, _ := s.runByID(book, id, runID)
 		return run, ErrUncertain
 	}
@@ -382,11 +403,11 @@ func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64,
 }
 
 // commitTx bisa diganti test untuk meniru COMMIT yang tidak dijawab.
-func (s *Store) commitTx(tx *sql.Tx) error {
+func (s *Store) commitTx(ctx context.Context, tx *sql.Tx, ltx *dbmanager.LoggedTx) error {
 	if s.commit != nil {
 		return s.commit(tx)
 	}
-	return tx.Commit()
+	return ltx.CommitContext(ctx)
 }
 
 // serverRejected berarti server database menjawab dengan error SQL biasa.
@@ -432,6 +453,12 @@ func (s *Store) finishRun(ctx context.Context, id, dbID, runID int64, status Sta
 	if e := s.finish(ctx, id, dbID, runID, status, message); e != nil {
 		return nil, e
 	}
+	level := slog.LevelInfo
+	if status != StatusSuccess {
+		level = slog.LevelWarn
+	}
+	slog.Log(ctx, level, "hasil attempt migration", "event", "migration.attempt_result",
+		"status", status, "db_id", dbID, "error", message)
 	run, e := s.runByID(ctx, id, runID)
 	if e != nil {
 		return nil, e

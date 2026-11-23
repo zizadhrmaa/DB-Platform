@@ -191,6 +191,12 @@ type LoggedTx struct {
 	dbName string
 }
 
+// WrapTx membungkus transaction yang sudah dibuka di tempat lain, misalnya
+// di koneksi khusus yang dibuang setelah dipakai (eksekusi migration).
+func WrapTx(tx *sql.Tx, dbID int64, dbName string) *LoggedTx {
+	return &LoggedTx{tx: tx, dbID: dbID, dbName: dbName}
+}
+
 func (t *LoggedTx) Raw() *sql.Tx {
 	return t.tx
 }
@@ -300,9 +306,13 @@ func (t *LoggedTx) QueryRowContext(ctx context.Context, query string, args ...an
 	return row
 }
 
-func (t *LoggedTx) Commit() error {
+// Commit sama dengan CommitContext tanpa context pemanggil.
+func (t *LoggedTx) Commit() error { return t.CommitContext(context.Background()) }
+
+// CommitContext mencatat commit dengan trace dan metadata job dari ctx,
+// supaya log commit bisa dikaitkan dengan eksekusinya.
+func (t *LoggedTx) CommitContext(ctx context.Context) error {
 	start := time.Now()
-	ctx := context.Background()
 	ctx, span := obs.StartSpan(ctx, "db.tx.commit")
 	defer span.End()
 
@@ -324,9 +334,12 @@ func (t *LoggedTx) Commit() error {
 	return nil
 }
 
-func (t *LoggedTx) Rollback() error {
+// Rollback sama dengan RollbackContext tanpa context pemanggil.
+func (t *LoggedTx) Rollback() error { return t.RollbackContext(context.Background()) }
+
+// RollbackContext mencatat rollback dengan trace dan metadata job dari ctx.
+func (t *LoggedTx) RollbackContext(ctx context.Context) error {
 	start := time.Now()
-	ctx := context.Background()
 	ctx, span := obs.StartSpan(ctx, "db.tx.rollback")
 	defer span.End()
 
