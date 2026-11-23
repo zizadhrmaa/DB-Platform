@@ -225,6 +225,10 @@ supaya statement berikutnya bisa memakai hasilnya. Satu-satunya efek yang
 tidak ikut kembali adalah nilai sequence yang sudah terpakai saat ANALYZE.
 Implementasinya ada di `internal/migration/explain.go`.
 
+Di Milestone 2 fitur ini ada di SPA: panel **Analisis query** di halaman
+detail migration (`POST /api/databases/{dbID}/migrations/{migrationID}/explain`
+dengan body `{"analyze": bool}`).
+
 ## Fitur bonus Milestone 1: schema diff
 
 Dari halaman riwayat migration, user dengan akses View + Edit bisa membuka
@@ -252,6 +256,12 @@ Batasannya:
   supaya dikerjakan manual.
 
 Implementasinya ada di `internal/migration/diff.go`.
+
+Di Milestone 2 fitur ini ada di SPA: tombol **Buat dari schema diff** di
+halaman Migration (`GET /api/databases/{dbID}/schema-diff?schema=` untuk DDL
+saat ini, `POST` dengan body `{"schema", "desired"}` untuk perbandingan).
+Kandidat SQL disimpan sebagai migration baru yang tetap melewati approval dan
+antrean.
 
 ## Testing
 
@@ -443,13 +453,16 @@ terputus, termasuk rollback.
 log aplikasi JSON (`migration.attempt_start`, `sql_start`, `sql_result`,
 `sql_commit`/`sql_rollback`, `migration.attempt_result`) dengan migration ID,
 execution ID, versi, revisi, pengguna, waktu, status, dan salinan SQL. Tabel
-`migration_history` hanya berisi eksekusi yang berhasil di-commit, ditulis dalam
-transaction yang sama dengan status attempt, dan dijaga trigger supaya tidak bisa
+`migration_history` menyimpan **semua attempt, berhasil maupun gagal** (spek
+revisi 4), dengan `status` dan `error_message`. Baris ditulis dalam transaction
+yang sama dengan perubahan status attempt, dan dijaga trigger supaya tidak bisa
 di-UPDATE, DELETE, atau TRUNCATE. Tabel ini sengaja tanpa foreign key supaya
-riwayat tetap ada walaupun koneksi atau user dihapus.
+riwayat tetap ada walaupun koneksi atau user dihapus. Pembatalan batch (revert)
+juga dicatat sebagai attempt `rollback` yang merujuk execution ID run batch
+yang dibatalkannya.
 
-`GET /api/databases/{dbID}/history` mengembalikan eksekusi committed dan attempt
-yang gagal (supaya kegagalan tetap terlihat). Dengan `?hide_rollback=true`
+`GET /api/databases/{dbID}/history` mengembalikan seluruh isi migration history,
+termasuk attempt yang gagal. Dengan `?hide_rollback=true`
 (checkbox **Hide rollback** di SPA), pasangan eksekusi yang dibatalkan dan
 rollback sukses yang membatalkannya disembunyikan berdasarkan execution ID:
 
@@ -461,8 +474,9 @@ rollback sukses yang membatalkannya disembunyikan berdasarkan execution ID:
 | B forward [E4] | B [E4] |
 | C [E5] | C [E5] |
 
-Filter ini tidak menghapus data riwayat maupun log. Contoh ini diuji di
-`TestHistoryHideRollbackSpecExample`.
+Filter ini tidak menghapus data riwayat maupun log, dan attempt yang gagal
+selalu tetap terlihat (rollback hanya dipasangkan dengan eksekusi yang sukses).
+Contoh ini diuji di `TestHistoryHideRollbackSpecExample`.
 
 **SPA.** Halaman `Migration` (daftar dan pembuatan dengan SQL up/down atau
 irreversible), detail migration (SQL, revisi, eksekusi, edit, discard, dan tombol
@@ -652,8 +666,11 @@ Base path `/api`. Error berbentuk `{"error":{"code","message","fields"}}`. Semua
 | `GET /api/databases/{dbID}/requests`, `GET .../requests/{requestID}` | View |
 | `POST .../migrations/{migrationID}/requests`, `.../requests/{requestID}/submit`, `.../enqueue`, `.../cancel` | Edit |
 | `POST .../requests/{requestID}/approve`, `.../reject` | View + leader group yang punya akses |
-| `GET .../jobs`, `GET .../jobs/{jobID}`, `GET .../history` | View (belum diimplementasikan) |
-| `POST .../jobs/{jobID}/resume`, `.../retry`, `.../revert` | Edit (belum diimplementasikan) |
+| `GET .../migrations`, `GET .../migrations/{migrationID}` | View |
+| `POST .../migrations`, `PATCH .../migrations/{migrationID}`, `POST .../{migrationID}/discard` | Edit |
+| `POST .../migrations/{migrationID}/explain`, `GET/POST .../schema-diff` (bonus M1) | Edit |
+| `GET .../jobs`, `GET .../jobs/{jobID}`, `GET .../history?hide_rollback=` | View |
+| `POST .../jobs/{jobID}/resume`, `.../retry`, `.../revert` | Edit |
 | `/api/admin/users`, `/groups`, `/databases` | Admin |
 | `PUT /api/admin/groups/{groupID}/leader` | Admin |
 
