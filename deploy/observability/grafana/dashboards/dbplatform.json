@@ -11,7 +11,12 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "title": "Queue & Migration Metrics",
       "type": "row"
@@ -20,34 +25,66 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "drawStyle": "line", "lineInterpolation": "smooth" }
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          }
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
       "id": 2,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
-          "expr": "sum by (status) (dbp_jobs_total)",
+          "expr": "sum by (status) (dbp_jobs)",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
       ],
-      "title": "Total Jobs by Status",
-      "type": "timeseries"
+      "title": "Job saat ini per status (menunggu, berjalan, selesai, gagal)",
+      "type": "timeseries",
+      "description": "Gauge dbp_jobs dihitung dari tabel jobs setiap scrape, jadi tetap benar setelah restart."
     },
     {
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "drawStyle": "bars" }
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "drawStyle": "bars"
+          }
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 1 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
       "id": 3,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (db) (dbp_job_retries_total)",
@@ -62,13 +99,25 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "s"
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
       "id": 4,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "rate(dbp_queue_wait_seconds_sum[1m]) / rate(dbp_queue_wait_seconds_count[1m])",
@@ -88,13 +137,25 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "s"
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "id": 5,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "rate(dbp_migration_duration_seconds_sum[1m]) / rate(dbp_migration_duration_seconds_count[1m])",
@@ -109,12 +170,24 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" }
+          "color": {
+            "mode": "palette-classic"
+          }
         }
       },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
       "id": 6,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (db) (dbp_batches_processed_total)",
@@ -132,7 +205,12 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
       "id": 7,
       "title": "Database Connection Pool Metrics",
       "type": "row"
@@ -141,13 +219,28 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineInterpolation": "smooth" }
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          }
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
       "id": 8,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "dbp_pool_open_connections",
@@ -172,13 +265,25 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "s"
         }
       },
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
       "id": 9,
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "rate(dbp_pool_wait_duration_seconds_total[1m])",
@@ -193,13 +298,67 @@
       ],
       "title": "Pool Wait Count & Duration",
       "type": "timeseries"
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Log terpusat (Loki) - klik trace_id untuk membuka trace di Jaeger",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "logs",
+      "title": "Log job dan migration",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{service_name=\"dbplatform\"} | event=~`job\\..*|migration\\..*|sql_commit|sql_rollback`"
+        }
+      ]
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["dbplatform", "observability"],
-  "time": { "from": "now-15m", "to": "now" },
+  "tags": [
+    "dbplatform",
+    "observability"
+  ],
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "DB-Platform Observability",
