@@ -15,6 +15,7 @@ import (
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
 	"github.com/zizadhrmaa/DB-Platform/internal/obs"
+	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
@@ -30,6 +31,7 @@ type App struct {
 	LoginLimiter  *auth.LoginLimiter
 	Migration     *migration.Handler
 	Approvals     *approval.Store
+	Jobs          *queue.Store
 	MetricsToken  string
 	MetricsStrict bool
 	DirectExecute bool

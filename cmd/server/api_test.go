@@ -641,8 +641,9 @@ func TestAPIJobAndHistoryRoutesAreAuthorized(t *testing.T) {
 		method, path               string
 		bob, carol, dave, anonCode int
 	}{
-		{"GET", "/jobs", 501, 501, 404, 401},
-		{"GET", "/jobs/1", 501, 501, 404, 401},
+		{"GET", "/jobs", 200, 200, 404, 401},
+		{"GET", "/jobs/1", 404, 404, 404, 401}, // job 1 tidak ada
+		{"GET", "/jobs?status=aneh", 400, 400, 404, 401},
 		{"GET", "/history", 501, 501, 404, 401},
 		{"POST", "/jobs/1/resume", 501, 403, 404, 401},
 		{"POST", "/jobs/1/retry", 501, 403, 404, 401},

@@ -74,9 +74,9 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/databases/{dbID}/requests/{requestID}/cancel",
 		dbWrite(authz.ActionRequestChange, "change.cancel", app.apiCancelChange))
 	mux.Handle("GET /api/databases/{dbID}/jobs",
-		dbRead(authz.ActionViewJobs, apiNotImplemented("Daftar job")))
+		dbRead(authz.ActionViewJobs, app.apiListJobs))
 	mux.Handle("GET /api/databases/{dbID}/jobs/{jobID}",
-		dbRead(authz.ActionViewJobs, apiNotImplemented("Detail job")))
+		dbRead(authz.ActionViewJobs, app.apiGetJob))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/resume",
 		dbWrite(authz.ActionManageJob, "job.resume", apiNotImplemented("Resume job")))
 	mux.Handle("POST /api/databases/{dbID}/jobs/{jobID}/retry",

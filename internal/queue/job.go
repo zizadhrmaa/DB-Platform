@@ -73,31 +73,34 @@ const (
 
 func (m Mode) Valid() bool { return m == ModeNormal || m == ModeBatch }
 
+// Job dikirim ke SPA apa adanya. Field yang hanya berguna di dalam sistem
+// (pemilik lease berisi hostname worker, kunci idempotensi, trace context)
+// sengaja tidak ikut di JSON.
 type Job struct {
-	ID               int64
-	DBID             int64
-	MigrationID      int64
-	RequestID        *int64
-	Kind             Kind
-	Mode             Mode
-	Status           Status
-	IdempotencyKey   string
-	RequestedBy      *int64
-	Attempt          int
-	MaxAttempts      int
-	NextRunAt        time.Time
-	LeaseOwner       string
-	LeaseUntil       *time.Time
-	RunID            *int64
-	TraceContext     string
-	BatchesCommitted int
-	RowsCommitted    int64
-	LastCursor       string
-	ErrorMessage     string
-	CreatedAt        time.Time
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
-	UpdatedAt        time.Time
+	ID               int64      `json:"id"`
+	DBID             int64      `json:"db_id"`
+	MigrationID      int64      `json:"migration_id"`
+	RequestID        *int64     `json:"request_id"`
+	Kind             Kind       `json:"kind"`
+	Mode             Mode       `json:"mode"`
+	Status           Status     `json:"status"`
+	IdempotencyKey   string     `json:"-"`
+	RequestedBy      *int64     `json:"requested_by"`
+	Attempt          int        `json:"attempt"`
+	MaxAttempts      int        `json:"max_attempts"`
+	NextRunAt        time.Time  `json:"next_run_at"`
+	LeaseOwner       string     `json:"-"`
+	LeaseUntil       *time.Time `json:"-"`
+	RunID            *int64     `json:"execution_id"` // migration_runs.id attempt terakhir
+	TraceContext     string     `json:"-"`
+	BatchesCommitted int        `json:"batches_committed"`
+	RowsCommitted    int64      `json:"rows_committed"`
+	LastCursor       string     `json:"last_cursor"`
+	ErrorMessage     string     `json:"error_message"`
+	CreatedAt        time.Time  `json:"created_at"`
+	StartedAt        *time.Time `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // RetryPolicy mengatur retry untuk kegagalan sementara (target tidak

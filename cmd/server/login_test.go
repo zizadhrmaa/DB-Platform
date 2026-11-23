@@ -104,6 +104,7 @@ func newHandlerWith(t *testing.T, db *sql.DB, pools dbmanager.Manager) http.Hand
 		LoginLimiter:  auth.NewLoginLimiter(),
 		Migration:     &migration.Handler{Service: migrations, Authz: az, View: r},
 		Approvals:     &approval.Store{DB: db, Queue: queueStore, Guard: approval.DefaultGuard(migrations), Authz: az},
+		Jobs:          queueStore,
 		DirectExecute: true,
 	}
 	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware, sessions.CSRFMiddleware)
