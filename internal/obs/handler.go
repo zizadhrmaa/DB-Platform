@@ -2,8 +2,10 @@ package obs
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -18,10 +20,55 @@ type Handler struct {
 var _ slog.Handler = (*Handler)(nil)
 
 // NewJSONHandler membuat slog.Handler berformat JSON dengan tracing dan redaksi otomatis.
-func NewJSONHandler(w io.Writer, opts *slog.HandlerOptions) *Handler {
-	return &Handler{
-		inner: slog.NewJSONHandler(w, opts),
+// Handler tambahan (misalnya pengirim log OTLP ke OpenTelemetry Collector)
+// menerima record yang sama setelah diperkaya dan diredaksi.
+func NewJSONHandler(w io.Writer, opts *slog.HandlerOptions, extra ...slog.Handler) *Handler {
+	var inner slog.Handler = slog.NewJSONHandler(w, opts)
+	if len(extra) > 0 {
+		inner = fanout(append([]slog.Handler{inner}, extra...))
 	}
+	return &Handler{inner: inner}
+}
+
+// fanout meneruskan setiap record ke beberapa handler.
+type fanout []slog.Handler
+
+func (f fanout) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range f {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f fanout) Handle(ctx context.Context, r slog.Record) error {
+	var first error
+	for _, h := range f {
+		if !h.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := h.Handle(ctx, r.Clone()); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (f fanout) WithAttrs(attrs []slog.Attr) slog.Handler {
+	out := make(fanout, len(f))
+	for i, h := range f {
+		out[i] = h.WithAttrs(attrs)
+	}
+	return out
+}
+
+func (f fanout) WithGroup(name string) slog.Handler {
+	out := make(fanout, len(f))
+	for i, h := range f {
+		out[i] = h.WithGroup(name)
+	}
+	return out
 }
 
 // Enabled memeriksa apakah level log diizinkan oleh handler utama.
@@ -110,10 +157,39 @@ func (h *Handler) redactAttr(a slog.Attr) slog.Attr {
 		return slog.Group(a.Key, anySliceToAny(redacted)...)
 	case slog.KindAny:
 		val := RedactValue(a.Key, a.Value.Any())
-		return slog.Any(a.Key, val)
+		return basicAttr(a.Key, val)
 	default:
 		return a
 	}
+}
+
+// basicAttr mengubah nilai bertipe bernama dengan tipe dasar string atau
+// angka (misalnya queue.Status) menjadi tipe dasarnya. Bridge otelslog
+// tidak mengenal tipe custom dan akan menuliskannya sebagai "unhandled".
+func basicAttr(key string, v any) slog.Attr {
+	if v == nil {
+		return slog.Any(key, v)
+	}
+	if _, ok := v.(error); ok {
+		return slog.Any(key, v)
+	}
+	if _, ok := v.(fmt.Stringer); ok {
+		return slog.Any(key, v)
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return slog.String(key, RedactString(rv.String()))
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return slog.Int64(key, rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return slog.Uint64(key, rv.Uint())
+	case reflect.Bool:
+		return slog.Bool(key, rv.Bool())
+	case reflect.Float32, reflect.Float64:
+		return slog.Float64(key, rv.Float())
+	}
+	return slog.Any(key, v)
 }
 
 func anySliceToAny(attrs []slog.Attr) []any {
