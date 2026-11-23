@@ -42,6 +42,14 @@ type Config struct {
 	Lease        time.Duration // lama lease, heartbeat tiap Lease/3; 0 = 30 detik
 	PollInterval time.Duration // jeda saat antrean kosong; 0 = 1 detik
 	JobTimeout   time.Duration // batas waktu eksekusi satu job; 0 = 30 menit
+	// RecoveryInterval adalah jeda loop pemulihan job milik worker yang mati
+	// dan job uncertain; 0 = sama dengan Lease.
+	RecoveryInterval time.Duration
+}
+
+// Verifier dipenuhi *migration.Store.
+type Verifier interface {
+	VerifyRun(ctx context.Context, dbID, migrationID, runID int64) (migration.Verdict, string, error)
 }
 
 type Worker struct {
@@ -49,6 +57,7 @@ type Worker struct {
 	Users      *sql.DB // database platform, untuk memuat ulang pengaju
 	Exec       Executor
 	Revalidate Revalidator // nil = hanya memeriksa pengaju dan akses
+	Verify     Verifier    // nil = Exec kalau Exec juga Verifier
 	Config
 	Log *slog.Logger
 
@@ -74,6 +83,9 @@ func (w *Worker) config() Config {
 		if c.JobTimeout <= 0 {
 			c.JobTimeout = 30 * time.Minute
 		}
+		if c.RecoveryInterval <= 0 {
+			c.RecoveryInterval = c.Lease
+		}
 		w.cfg = c
 	})
 	return w.cfg
@@ -93,10 +105,11 @@ func defaultID() string {
 	return fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(b))
 }
 
-// Run menjalankan Concurrency goroutine sampai ctx dibatalkan. Setelah
-// dibatalkan, worker berhenti mengambil job baru, tetapi job yang sedang
-// berjalan diselesaikan dulu (eksekusinya tidak ikut dibatalkan). Run baru
-// kembali setelah semua job itu selesai.
+// Run menjalankan Concurrency goroutine pengambil job dan satu loop
+// pemulihan sampai ctx dibatalkan. Setelah dibatalkan, worker berhenti
+// mengambil job baru, tetapi job yang sedang berjalan diselesaikan dulu
+// (eksekusinya tidak ikut dibatalkan). Run baru kembali setelah semua job
+// itu selesai.
 func (w *Worker) Run(ctx context.Context) {
 	cfg := w.config()
 	w.logger().Info("worker mulai", "event", "worker.start", "worker_id", cfg.ID, "concurrency", cfg.Concurrency)
@@ -108,6 +121,11 @@ func (w *Worker) Run(ctx context.Context) {
 			w.loop(ctx, cfg)
 		}()
 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.recoveryLoop(ctx, cfg)
+	}()
 	wg.Wait()
 	w.logger().Info("worker berhenti", "event", "worker.stop", "worker_id", cfg.ID)
 }
