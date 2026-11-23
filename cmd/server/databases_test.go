@@ -200,3 +200,87 @@ func TestDatabaseViewer(t *testing.T) {
 		t.Errorf("koneksi nonaktif masih bisa dibuka: %d", rr.Code)
 	}
 }
+
+func TestAPIDatabaseViewer(t *testing.T) {
+	db := testutil.PlatformDB(t)
+	testutil.MustUser(t, db, "root", true)
+	bobUser := testutil.MustUser(t, db, "bob", false)
+	testutil.MustUser(t, db, "carol", false)
+	srv := testutil.ServerParams(t)
+
+	target, schema := testutil.TargetDB(t)
+	if _, err := target.Exec(`
+		CREATE TABLE items (id INT PRIMARY KEY, name TEXT NOT NULL);
+		INSERT INTO items VALUES (1, 'produk-1'), (2, 'produk-2');`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHandler(t, db)
+	root := loginAs(t, h, "root", testutil.TestPassword)
+	rr := root.post("/admin/databases", connectionForm("toko", srv.Password, srv))
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("buat koneksi: %d", rr.Code)
+	}
+	id := locationID(t, rr)
+
+	gid := testutil.MustGroup(t, db, "viewers")
+	testutil.MustAddMember(t, db, gid, bobUser.ID)
+	n, _ := strconv.ParseInt(id, 10, 64)
+	testutil.MustGrant(t, db, gid, n, "view")
+
+	bob := loginAs(t, h, "bob", testutil.TestPassword)
+	carol := loginAs(t, h, "carol", testutil.TestPassword)
+
+	// 1. GET /api/databases (login required)
+	listResp := bob.do("GET", "/api/databases", nil)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/databases: %d", listResp.Code)
+	}
+	if !strings.Contains(listResp.Body.String(), "toko") {
+		t.Errorf("GET /api/databases body: %s; want toko", listResp.Body.String())
+	}
+
+	// 2. GET /api/databases/{dbID} (schema group & tables)
+	showResp := bob.do("GET", "/api/databases/"+id, nil)
+	if showResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/databases/%s: %d", id, showResp.Code)
+	}
+	if !strings.Contains(showResp.Body.String(), schema) || !strings.Contains(showResp.Body.String(), "items") {
+		t.Errorf("GET /api/databases/%s: %s; want schema and items", id, showResp.Body.String())
+	}
+
+	// 3. GET /api/databases/{dbID}/tables/{schema}/{table} (table detail)
+	tablePath := "/api/databases/" + id + "/tables/" + url.PathEscape(schema) + "/items"
+	tableResp := bob.do("GET", tablePath, nil)
+	if tableResp.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d", tablePath, tableResp.Code)
+	}
+	if !strings.Contains(tableResp.Body.String(), "PRIMARY KEY") {
+		t.Errorf("GET %s: %s; want PRIMARY KEY", tablePath, tableResp.Body.String())
+	}
+
+	// 4. GET /api/databases/{dbID}/tables/{schema}/{table}/data (paginated data)
+	dataPath := tablePath + "/data?page=1&size=10"
+	dataResp := bob.do("GET", dataPath, nil)
+	if dataResp.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d", dataPath, dataResp.Code)
+	}
+	if !strings.Contains(dataResp.Body.String(), "produk-1") {
+		t.Errorf("GET %s: %s; want produk-1", dataPath, dataResp.Body.String())
+	}
+
+	// 5. User tanpa akses mendapat 404 JSON
+	for _, path := range []string{
+		"/api/databases/" + id,
+		tablePath,
+		dataPath,
+	} {
+		unauth := carol.do("GET", path, nil)
+		if unauth.Code != http.StatusNotFound {
+			t.Errorf("carol GET %s: %d, want 404", path, unauth.Code)
+		}
+		if !strings.Contains(unauth.Body.String(), `"not_found"`) {
+			t.Errorf("carol GET %s body: %s; want json error not_found", path, unauth.Body.String())
+		}
+	}
+}

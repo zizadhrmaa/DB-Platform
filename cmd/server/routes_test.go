@@ -20,7 +20,7 @@ func newTestServer(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("template gagal di-parse: %v", err)
 	}
-	httpx.ErrorRenderer = r.ErrorPage
+	useErrorRenderer(t, httpx.APIAware(r.ErrorPage))
 	az := &authz.Static{
 		Levels: map[authz.Key]domain.AccessLevel{{UserID: 1, DBID: 10}: domain.AccessView},
 		Names:  map[int64]string{10: "Toko <script>"},

@@ -187,6 +187,15 @@ func (app *App) adminDeleteConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := app.Connections.Delete(r.Context(), id); err != nil {
+		if msg, status, ok := formErrorStatus(err); ok {
+			c, getErr := app.Connections.Get(r.Context(), id)
+			if getErr != nil {
+				httpx.Error(w, r, getErr)
+				return
+			}
+			app.renderConnection(w, r, status, id, formFromInfo(c), "", msg)
+			return
+		}
 		httpx.Error(w, r, err)
 		return
 	}

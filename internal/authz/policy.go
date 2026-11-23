@@ -1,7 +1,3 @@
-// Package authz berisi semua aturan hak akses.
-
-// Modul lain jangan mengecek level sendiri (if level == "edit"), selalu
-// lewat package ini.
 package authz
 
 import (
@@ -20,9 +16,14 @@ const (
 	ActionCreateMigration  Action = "db.migration.create"
 	ActionEditMigration    Action = "db.migration.edit" // termasuk discard
 	ActionExecuteMigration Action = "db.migration.execute"
+	ActionViewChanges      Action = "db.change.view"
+	ActionRequestChange    Action = "db.change.request"
+	ActionApproveChange    Action = "db.change.approve"
+	ActionViewJobs         Action = "db.job.view"
+	ActionManageJob        Action = "db.job.manage"
+	ActionViewHistory      Action = "db.history.view"
 )
 
-// Aksi yang tidak ada di sini selalu ditolak.
 var requiredLevel = map[Action]domain.AccessLevel{
 	ActionViewSchema:       domain.AccessView,
 	ActionViewData:         domain.AccessView,
@@ -31,6 +32,12 @@ var requiredLevel = map[Action]domain.AccessLevel{
 	ActionCreateMigration:  domain.AccessEdit,
 	ActionEditMigration:    domain.AccessEdit,
 	ActionExecuteMigration: domain.AccessEdit,
+	ActionViewChanges:      domain.AccessView,
+	ActionRequestChange:    domain.AccessEdit,
+	ActionApproveChange:    domain.AccessView,
+	ActionViewJobs:         domain.AccessView,
+	ActionManageJob:        domain.AccessEdit,
+	ActionViewHistory:      domain.AccessView,
 }
 
 func RequiredLevel(a Action) (domain.AccessLevel, bool) {
@@ -38,8 +45,6 @@ func RequiredLevel(a Action) (domain.AccessLevel, bool) {
 	return l, ok
 }
 
-// EffectiveLevel mengambil level tertinggi dari semua group. Tidak ada
-// grant "deny", jadi masuk ke group baru tidak pernah mengurangi akses.
 func EffectiveLevel(levels ...domain.AccessLevel) domain.AccessLevel {
 	eff := domain.AccessNone
 	for _, l := range levels {
@@ -50,8 +55,6 @@ func EffectiveLevel(levels ...domain.AccessLevel) domain.AccessLevel {
 	return eff
 }
 
-// Decide tidak melakukan I/O. User tanpa akses sama sekali mendapat
-// ErrNotFound, bukan ErrForbidden, supaya keberadaan database tidak bocor.
 func Decide(u *domain.User, level domain.AccessLevel, action Action) error {
 	if u == nil || !u.IsActive {
 		return domain.ErrUnauthenticated
@@ -69,8 +72,6 @@ func Decide(u *domain.User, level domain.AccessLevel, action Action) error {
 	return nil
 }
 
-// IsPlatformAdmin hanya untuk halaman /admin. Admin tetap butuh grant
-// group untuk membuka database.
 func IsPlatformAdmin(u *domain.User) bool {
 	return u != nil && u.IsActive && u.IsPlatformAdmin
 }

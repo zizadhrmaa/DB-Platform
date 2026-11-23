@@ -7,3 +7,6 @@ coverage.*
 .DS_Store
 .idea/
 .vscode/
+web/dist/*
+!web/dist/.gitkeep
+frontend/node_modules/

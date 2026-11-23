@@ -51,6 +51,15 @@ func TestDecide(t *testing.T) {
 		{"view tidak boleh edit", active, domain.AccessView, ActionEditMigration, domain.ErrForbidden},
 		{"view tidak boleh execute", active, domain.AccessView, ActionExecuteMigration, domain.ErrForbidden},
 		{"edit boleh execute", active, domain.AccessEdit, ActionExecuteMigration, nil},
+		{"view boleh lihat request", active, domain.AccessView, ActionViewChanges, nil},
+		{"view boleh approve (leader dicek terpisah)", active, domain.AccessView, ActionApproveChange, nil},
+		{"view tidak boleh membuat request", active, domain.AccessView, ActionRequestChange, domain.ErrForbidden},
+		{"edit boleh membuat request", active, domain.AccessEdit, ActionRequestChange, nil},
+		{"view boleh lihat job", active, domain.AccessView, ActionViewJobs, nil},
+		{"view tidak boleh mengelola job", active, domain.AccessView, ActionManageJob, domain.ErrForbidden},
+		{"edit boleh mengelola job", active, domain.AccessEdit, ActionManageJob, nil},
+		{"view boleh lihat riwayat", active, domain.AccessView, ActionViewHistory, nil},
+		{"tanpa akses tidak boleh lihat job", active, domain.AccessNone, ActionViewJobs, domain.ErrNotFound},
 		{"admin tanpa grant tidak otomatis akses", admin, domain.AccessNone, ActionViewSchema, domain.ErrNotFound},
 		{"aksi tak dikenal ditolak", active, domain.AccessEdit, Action("db.drop"), domain.ErrForbidden},
 	}
@@ -68,8 +77,12 @@ func TestDecide(t *testing.T) {
 }
 
 func TestEveryActionHasPolicy(t *testing.T) {
-	for _, a := range []Action{ActionViewSchema, ActionViewData, ActionRunReadQuery, ActionViewMigrations,
-		ActionCreateMigration, ActionEditMigration, ActionExecuteMigration} {
+	for _, a := range []Action{
+		ActionViewSchema, ActionViewData, ActionRunReadQuery, ActionViewMigrations,
+		ActionCreateMigration, ActionEditMigration, ActionExecuteMigration,
+		ActionViewChanges, ActionRequestChange, ActionApproveChange,
+		ActionViewJobs, ActionManageJob, ActionViewHistory,
+	} {
 		if _, ok := RequiredLevel(a); !ok {
 			t.Errorf("aksi %s belum ada di tabel kebijakan", a)
 		}
