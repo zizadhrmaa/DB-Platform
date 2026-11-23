@@ -23,8 +23,10 @@ export const MigrationDetailPage = () => {
   const discardable = editable || m.status === 'rolled_back';
   const requestKinds: ExecutionKind[] = [];
   if (editable) requestKinds.push('up');
-  if (m.status === 'success' && !m.irreversible) requestKinds.push('rollback');
-  if (m.status === 'rolled_back') requestKinds.push('forward');
+  if (m.exec_mode === 'normal' && m.status === 'success' && !m.irreversible) requestKinds.push('rollback');
+  if (m.exec_mode === 'normal' && m.status === 'rolled_back') requestKinds.push('forward');
+  // Batch committed dibatalkan lewat aksi revert pada job: butuh request rollback yang disetujui.
+  if (m.exec_mode === 'batch' && m.status === 'failed' && !m.irreversible) requestKinds.push('rollback');
 
   const save = (draft: MigrationDraft) =>
     action.run(
@@ -70,6 +72,11 @@ export const MigrationDetailPage = () => {
           Status: <strong>{statusLabel[m.status] ?? m.status}</strong> &bull; Revisi {m.revision} &bull; Dibuat oleh{' '}
           {m.created_by} ({fmtTime(m.created_at)})
         </p>
+        {m.exec_mode === 'batch' && (
+          <p>
+            <strong>Mode batch:</strong> tabel {m.batch_table}, kolom {m.batch_column}, {m.batch_size} row per batch.
+          </p>
+        )}
         {m.irreversible && (
           <p>
             <strong>Irreversible:</strong> {m.irreversible_reason}
@@ -107,6 +114,10 @@ export const MigrationDetailPage = () => {
               sql_down: m.sql_down,
               irreversible: m.irreversible,
               irreversible_reason: m.irreversible_reason,
+              exec_mode: m.exec_mode,
+              batch_table: m.batch_table,
+              batch_column: m.batch_column || 'id',
+              batch_size: m.batch_size || 1000,
             }}
             submitLabel="Simpan revisi"
             busy={action.busy}

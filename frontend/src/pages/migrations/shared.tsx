@@ -56,6 +56,10 @@ export const emptyDraft: MigrationDraft = {
   sql_down: '',
   irreversible: false,
   irreversible_reason: '',
+  exec_mode: 'normal',
+  batch_table: '',
+  batch_column: 'id',
+  batch_size: 1000,
 };
 
 interface DraftFormProps {
@@ -94,6 +98,62 @@ export const DraftForm = ({ initial, submitLabel, busy, onSubmit, onCancel }: Dr
           onChange={(e) => set('title', e.target.value)}
         />
       </div>
+      <div className="field">
+        <label htmlFor="mig-mode">Mode eksekusi</label>
+        <select
+          id="mig-mode"
+          className="input"
+          value={draft.exec_mode}
+          onChange={(e) => set('exec_mode', e.target.value as MigrationDraft['exec_mode'])}
+        >
+          <option value="normal">Biasa (satu transaction)</option>
+          <option value="batch">Per batch</option>
+        </select>
+      </div>
+      {draft.exec_mode === 'batch' && (
+        <>
+          <p className="muted">
+            SQL up dan down harus satu statement yang memakai <code>$1</code> (batas bawah, eksklusif) dan{' '}
+            <code>$2</code> (batas atas, inklusif), misalnya{' '}
+            <code>UPDATE produk SET harga = harga * 2 WHERE id &gt; $1 AND id &lt;= $2</code>.
+          </p>
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="mig-table">Tabel</label>
+              <input
+                id="mig-table"
+                className="input"
+                required
+                placeholder="produk atau public.produk"
+                value={draft.batch_table}
+                onChange={(e) => set('batch_table', e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="mig-column">Kolom batch (integer, unik)</label>
+              <input
+                id="mig-column"
+                className="input"
+                required
+                value={draft.batch_column}
+                onChange={(e) => set('batch_column', e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="mig-size">Ukuran batch</label>
+              <input
+                id="mig-size"
+                className="input"
+                type="number"
+                min={1}
+                required
+                value={draft.batch_size}
+                onChange={(e) => set('batch_size', Number(e.target.value))}
+              />
+            </div>
+          </div>
+        </>
+      )}
       <div className="field">
         <label htmlFor="mig-up">SQL up</label>
         <textarea

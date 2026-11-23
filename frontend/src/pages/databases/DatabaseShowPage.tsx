@@ -82,6 +82,9 @@ export const DatabaseShowPage: React.FC = () => {
         <Link className="btn btn-secondary" to={`/databases/${db.id}/history`}>
           Riwayat eksekusi
         </Link>
+        <Link className="btn btn-secondary" to={`/databases/${db.id}/jobs`}>
+          Job
+        </Link>
         <Link className="btn btn-secondary" to={`/databases/${db.id}/changes`}>
           Request perubahan
         </Link>
