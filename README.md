@@ -289,11 +289,115 @@ web/                 template Go, fallback embed & aset statis
 
 ## Milestone 2: antrean, worker, rollback, dan batch
 
-> TODO (Aziza): jelaskan queue dan worker, lock lintas worker dan
-> pemulihan lock saat worker mati, retry dan idempotensi, penanganan hasil
-> commit yang belum pasti (`uncertain`), mode batch (checkpoint, resume,
-> kompensasi per batch, status `partial` dan `partially_reverted`), serta
-> dataset uji (jumlah row dan durasi `UPDATE` penuh dibanding mode batch).
+### Antrean dan worker
+
+Setiap eksekusi migration (up, rollback, forward, resume, dan revert batch)
+menjadi baris di tabel `jobs` dan dijalankan worker secara asynchronous. Endpoint
+enqueue mengembalikan job ID tanpa menunggu SQL; status dipantau lewat
+`GET /api/databases/{dbID}/jobs` dan halaman **Job** di SPA (polling setiap 2
+detik selama job belum selesai).
+
+- **Antrean di PostgreSQL platform.** Worker mengambil job dengan
+  `SELECT ... FOR UPDATE SKIP LOCKED`, jadi job tetap ada setelah restart tanpa
+  broker tambahan. Per database hanya job antre tertua yang diambil, sehingga
+  urutan migration tidak tersalip.
+- **Satu database, satu migration.** Index unik parsial
+  `jobs_one_active_per_db_uq` menahan database selama ada job `running`,
+  `uncertain`, `partial`, atau `partially_reverted`, lintas worker maupun proses.
+  Di database target, eksekusi mengambil advisory lock yang sama. Database
+  berbeda diproses paralel (`WORKER_CONCURRENCY`).
+- **Lease dan heartbeat.** Worker memperpanjang lease setiap sepertiga durasinya.
+  Semua perubahan status memakai compare-and-set terhadap pemilik lease, nomor
+  attempt, dan execution ID.
+- **Revalidasi.** Sebelum SQL jalan, worker memuat ulang pengaju, memeriksa
+  approval (`approval.Store.Revalidate`), akses, dan urutan migration.
+- **Retry dan idempotensi.** Kegagalan sementara (lock target dipegang, target
+  tidak terjangkau, koneksi putus sebelum COMMIT, worker mati) diulang dengan
+  jeda `min(2s × 2^(attempt−1), 60s)`, maksimal 5 attempt. SQL yang ditolak
+  server tidak diulang. Kiriman ulang dengan kunci idempotensi yang sama
+  mengembalikan job yang sama, dan bukti di target mencegah double commit.
+- **Hasil commit belum pasti.** Kalau COMMIT tidak dijawab, bukti di database
+  target diperiksa dulu; kalau belum bisa diperiksa, job menjadi `uncertain` dan
+  database ditahan sampai pemulihan memastikan hasilnya.
+
+Penjelasan lengkap, termasuk **pemulihan lock ketika worker gagal**, ada di
+[`docs/antrean-dan-pemulihan.md`](docs/antrean-dan-pemulihan.md).
+
+Konfigurasi: `WORKER_ENABLED` (default `true`), `WORKER_CONCURRENCY` (default
+`2`), `JOB_TIMEOUT` (default `30m`).
+
+### Migration per batch
+
+Migration bisa dibuat dengan mode batch: tabel, kolom cursor (integer, unik,
+tidak berubah), dan ukuran batch. SQL up dan SQL down masing-masing satu
+statement yang memakai `$1` (batas bawah, eksklusif) dan `$2` (batas atas,
+inklusif):
+
+```sql
+UPDATE produk SET harga = harga * 2 WHERE id > $1 AND id <= $2   -- up
+UPDATE produk SET harga = harga / 2 WHERE id > $1 AND id <= $2   -- down
+```
+
+- Satu job memegang `pg_advisory_lock` level session di satu koneksi selama
+  seluruh job, jadi lock tetap melindungi database **di antara** commit batch.
+  Kalau worker mati, koneksi putus dan PostgreSQL melepas lock itu.
+- Cakupan ditentukan sekali di awal job (`max` kolom cursor), lalu batas atas
+  setiap batch dicari dengan cursor
+  (`WHERE id > last ORDER BY id LIMIT size`). Platform hanya membaca satu nilai
+  per batch dan tidak pernah memuat isi tabel ke memory.
+- Setiap batch satu transaction: SQL user untuk rentang `(lower, upper]` dan
+  checkpoint (job, nomor batch, rentang, jumlah row) di tabel target
+  `_dbplatform_batches` ditulis bersama lalu di-commit. Batch yang gagal hanya
+  me-rollback transaction-nya sendiri; job menjadi `partial` dan database tetap
+  ditahan. Jumlah batch/row committed tampil di halaman Job.
+- **Resume** (`POST /jobs/{id}/resume`) melanjutkan dari checkpoint di target;
+  batch committed tidak diulang. Job dari worker yang mati dipulihkan dan
+  dilanjutkan dari checkpoint yang sama.
+- **Revert** (`POST /jobs/{id}/revert` dengan request rollback yang disetujui
+  semua leader) menjalankan SQL down per batch dalam urutan terbalik memakai
+  rentang dari checkpoint. Setiap pembatalan ditandai `reverted_at` dalam
+  transaction yang sama; kalau gagal di tengah, job menjadi
+  `partially_reverted` dan bisa dilanjutkan. Migration irreversible tidak bisa
+  di-revert.
+
+### Dataset uji
+
+Dataset dan pengukuran bisa diulang dengan satu perintah:
+
+```
+make bench-batch            # default 3.000.000 row; ubah dengan BENCH_ROWS=...
+```
+
+Perintah ini membuat database `bench` di container `test-db`, mengisi tabel
+`bench_big` dengan `generate_series`, mengukur `UPDATE bench_big SET harga =
+harga + 1` tanpa batch sebanyak 3 kali (median), lalu menjalankan update yang
+sama per batch dengan pola statement yang sama seperti runner batch platform
+(`cmd/benchbatch`).
+
+Lingkungan uji: Intel Core i7-13620H (10 core / 16 thread), RAM 16 GB, SSD,
+Windows 11; PostgreSQL 16.15 di Docker Desktop (container `test-db`).
+
+| Dataset | UPDATE penuh tanpa batch (3 kali) | Median |
+|---|---|---|
+| 3.000.000 row | 11,17 s; 17,01 s; 14,97 s | **14,97 s** |
+
+| Ukuran batch | Jumlah batch | Durasi total | Rata-rata per batch | Transaction terlama |
+|---|---|---|---|---|
+| 10.000 | 300 | 16,86 s | 56 ms | 89 ms |
+| 50.000 | 60 | 14,77 s | 246 ms | 244 ms |
+| 200.000 | 15 | 13,27 s | 884 ms | 801 ms |
+
+**Analisis.** `UPDATE` penuh mengunci dan menulis 3 juta row dalam satu
+transaction selama hampir 15 detik; selama itu row yang ter-update terkunci
+untuk transaction lain, dan kalau gagal di tengah seluruh pekerjaan hilang. Mode
+batch menyelesaikan pekerjaan yang sama dalam waktu total yang sebanding
+(13–17 s), tetapi setiap transaction hanya puluhan sampai ratusan milidetik,
+sehingga lock row dilepas cepat, kegagalan hanya membatalkan satu batch, dan
+pekerjaan bisa dilanjutkan dari checkpoint. Batch kecil (10.000) memberi
+transaction terpendek dengan sedikit overhead (pencarian batas atas dan
+checkpoint per batch); batch besar (200.000) lebih cepat secara total tetapi
+setiap transaction mendekati 1 detik. Ukuran 10.000–50.000 adalah kompromi yang
+baik untuk dataset ini.
 
 ### Migration v2: up/down, rollback, forward, dan riwayat
 
