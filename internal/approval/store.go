@@ -782,13 +782,22 @@ func (s *Store) Enqueue(ctx context.Context, u *domain.User, dbID, id int64) (*q
 		TraceContext:   obs.InjectTraceParent(ctx),
 	})
 	if err != nil {
+		// queue menolak job dengan jenis berbeda (misalnya rollback saat job
+		// up masih terbuka) supaya ID job lain tidak dikembalikan sebagai
+		// eksekusi yang diminta. Beri pesan yang menjelaskan job yang menahan.
+		if errors.Is(err, domain.ErrConflict) {
+			open, oerr := s.openJob(ctx, r.migrationID)
+			if oerr != nil {
+				return nil, oerr
+			}
+			if open != nil {
+				return nil, openJobConflict(open)
+			}
+		}
 		return nil, err
 	}
 	if job.RequestID == nil || *job.RequestID != id {
-		if job.Status == queue.StatusPartial || job.Status == queue.StatusPartiallyReverted {
-			return nil, httpx.Conflict(fmt.Sprintf("Migration ini masih partial pada job #%d. Gunakan aksi revert pada job tersebut dengan request rollback ini.", job.ID))
-		}
-		return nil, httpx.Conflict("Migration ini masih punya job lain yang belum selesai.")
+		return nil, openJobConflict(job)
 	}
 	if status == StatusApproved {
 		if _, err := s.DB.ExecContext(ctx, `
@@ -798,6 +807,29 @@ func (s *Store) Enqueue(ctx context.Context, u *domain.User, dbID, id int64) (*q
 		}
 	}
 	return job, nil
+}
+
+// openJob mengembalikan job terbuka milik migration, atau nil.
+func (s *Store) openJob(ctx context.Context, migrationID int64) (*queue.Job, error) {
+	j := &queue.Job{}
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, status FROM jobs
+		WHERE migration_id = $1 AND status IN ('queued','running','uncertain','partial','partially_reverted')`,
+		migrationID).Scan(&j.ID, &j.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+func openJobConflict(j *queue.Job) error {
+	if j.Status == queue.StatusPartial || j.Status == queue.StatusPartiallyReverted {
+		return httpx.Conflict(fmt.Sprintf("Migration ini masih partial pada job #%d. Gunakan aksi revert pada job tersebut dengan request rollback ini.", j.ID))
+	}
+	return httpx.Conflict("Migration ini masih punya job lain yang belum selesai.")
 }
 
 func (s *Store) ConsumeRevert(ctx context.Context, u *domain.User, dbID, jobID, requestID int64) (*Detail, error) {
