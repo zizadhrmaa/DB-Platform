@@ -104,3 +104,54 @@ export interface ChangeDetail extends ChangeRequest {
   target_sql: string;
   approvals: Approval[];
 }
+export type MigrationStatus = 'pending' | 'running' | 'success' | 'failed' | 'discarded' | 'rolled_back';
+export type ExecutionKind = 'up' | 'rollback' | 'forward';
+
+export interface Migration {
+  id: number;
+  version: number;
+  revision: number;
+  title: string;
+  sql: string;
+  sql_down: string;
+  irreversible: boolean;
+  irreversible_reason: string;
+  status: MigrationStatus;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  executed_by: string;
+  executed_at: string | null;
+  finished_at: string | null;
+  error_message: string;
+}
+
+export interface Execution {
+  execution_id: number;
+  migration_id: number;
+  version?: number;
+  title?: string;
+  kind: ExecutionKind;
+  revision: number;
+  status: 'running' | 'success' | 'failed';
+  sql: string;
+  executed_by: string;
+  started_at: string;
+  finished_at: string | null;
+  reverts_execution_id: number | null;
+  error_message: string;
+}
+
+export interface MigrationDetail {
+  migration: Migration;
+  executions: Execution[];
+  latest_applied_execution_id: number | null;
+}
+
+export interface MigrationDraft {
+  title: string;
+  sql_up: string;
+  sql_down: string;
+  irreversible: boolean;
+  irreversible_reason: string;
+}
