@@ -11,11 +11,13 @@ import (
 	"testing"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
+	"github.com/zizadhrmaa/DB-Platform/internal/approval"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
+	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 	"github.com/zizadhrmaa/DB-Platform/internal/testutil"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
 	"github.com/zizadhrmaa/DB-Platform/web"
@@ -23,7 +25,13 @@ import (
 
 const origin = "http://example.com"
 
-// browser menyimpan cookie session seperti browser sungguhan.
+func useErrorRenderer(t *testing.T, fn func(http.ResponseWriter, *http.Request, int, string)) {
+	t.Helper()
+	prev := httpx.ErrorRenderer
+	httpx.ErrorRenderer = fn
+	t.Cleanup(func() { httpx.ErrorRenderer = prev })
+}
+
 type browser struct {
 	t      *testing.T
 	h      http.Handler
@@ -59,21 +67,17 @@ func (b *browser) do(method, path string, form url.Values) *httptest.ResponseRec
 
 var csrfInput = regexp.MustCompile(`name="csrf_token" value="([^"]*)"`)
 
-// newHandler merakit aplikasi lengkap di atas database test, sama seperti
-// di main.go.
 func newHandler(t *testing.T, db *sql.DB) http.Handler {
 	return newHandlerWith(t, db, nil)
 }
 
-// newHandlerWith sama dengan newHandler, tapi memakai pools yang diberikan.
-// nil berarti memakai PoolManager sungguhan.
 func newHandlerWith(t *testing.T, db *sql.DB, pools dbmanager.Manager) http.Handler {
 	t.Helper()
 	r, err := view.New(web.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpx.ErrorRenderer = r.ErrorPage
+	useErrorRenderer(t, httpx.APIAware(r.ErrorPage))
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(false))
 	key := make([]byte, 32)
 	rand.Read(key)
@@ -88,18 +92,22 @@ func newHandlerWith(t *testing.T, db *sql.DB, pools dbmanager.Manager) http.Hand
 	}
 	az := &authz.Service{DB: db}
 	migrations := &migration.Store{DB: db, Targets: pools, Authz: az}
+	queueStore := &queue.Store{DB: db, Policy: queue.DefaultRetryPolicy()}
 	app := &App{
-		DB:           db,
-		View:         r,
-		Admin:        &admin.Store{DB: db},
-		Connections:  &admin.Connections{DB: db, Secrets: secrets},
-		Pools:        pools,
-		Authz:        az,
-		Sessions:     sessions,
-		LoginLimiter: auth.NewLoginLimiter(),
-		Migration:    &migration.Handler{Service: migrations, Authz: az, View: r},
+		DB:            db,
+		View:          r,
+		Admin:         &admin.Store{DB: db},
+		Connections:   &admin.Connections{DB: db, Secrets: secrets},
+		Pools:         pools,
+		Authz:         az,
+		Sessions:      sessions,
+		LoginLimiter:  auth.NewLoginLimiter(),
+		Migration:     &migration.Handler{Service: migrations, Authz: az, View: r},
+		Approvals:     &approval.Store{DB: db, Queue: queueStore, Guard: approval.DefaultGuard(migrations), Authz: az},
+		Jobs:          queueStore,
+		DirectExecute: true,
 	}
-	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, sessions.Middleware, sessions.CSRFMiddleware)
+	return httpx.Chain(app.routes(), httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware, sessions.CSRFMiddleware)
 }
 
 func newLoginServer(t *testing.T) *browser {
@@ -197,7 +205,6 @@ func TestLoginLockedAfterTooManyFailures(t *testing.T) {
 		}
 	}
 
-	// Password benar pun ditolak selama terkunci.
 	rr := b.do("POST", "/login", url.Values{"username": {"Alice"}, "password": {testutil.TestPassword}})
 	if rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429", rr.Code)

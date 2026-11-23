@@ -1,4 +1,3 @@
-// Command server menjalankan Database Management Platform.
 package main
 
 import (
@@ -12,19 +11,23 @@ import (
 	"time"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/admin"
+	"github.com/zizadhrmaa/DB-Platform/internal/approval"
 	"github.com/zizadhrmaa/DB-Platform/internal/auth"
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/config"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/httpx"
 	"github.com/zizadhrmaa/DB-Platform/internal/migration"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 	"github.com/zizadhrmaa/DB-Platform/internal/platformdb"
+	"github.com/zizadhrmaa/DB-Platform/internal/queue"
 	"github.com/zizadhrmaa/DB-Platform/internal/view"
+	"github.com/zizadhrmaa/DB-Platform/internal/worker"
 	"github.com/zizadhrmaa/DB-Platform/web"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(obs.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
 		slog.Error("server berhenti", "err", err)
 		os.Exit(1)
@@ -39,6 +42,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	_, shutdownTracer, err := obs.InitTracer(ctx, "dbplatform")
+	if err != nil {
+		slog.Warn("gagal inisialisasi opentelemetry tracer", "err", err)
+	} else if shutdownTracer != nil {
+		defer shutdownTracer(context.Background())
+	}
+
 	db, err := platformdb.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -48,13 +58,13 @@ func run() error {
 		return err
 	}
 
-	// Cek key sejak start supaya salah konfigurasi langsung ketahuan.
 	secrets, err := dbmanager.NewSecretBoxFromBase64(cfg.SecretKeyB64)
 	if err != nil {
 		return err
 	}
 	pools := dbmanager.NewPoolManager(db, secrets)
 	defer pools.Close()
+	obs.RegisterPoolProvider(pools)
 
 	if cfg.AdminPassword != "" {
 		hash, err := auth.HashPassword(cfg.AdminPassword)
@@ -74,32 +84,74 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	httpx.ErrorRenderer = renderer.ErrorPage
+	httpx.ErrorRenderer = httpx.APIAware(renderer.ErrorPage)
 
 	sessions := auth.NewDBSessionManager(db, auth.DefaultSessionConfig(cfg.CookieSecure()))
 	go sessions.RunCleanup(ctx, time.Hour)
 
 	az := &authz.Service{DB: db}
 	migrations := &migration.Store{DB: db, Targets: pools, Authz: az}
-	// Bereskan migration yang tertinggal running kalau server sebelumnya mati.
 	if err := migrations.Recover(ctx); err != nil {
 		slog.Warn("sebagian migration yang terputus belum bisa dibereskan", "err", err)
 	}
 
-	app := &App{
-		DB:           db,
-		View:         renderer,
-		Admin:        &admin.Store{DB: db},
-		Connections:  &admin.Connections{DB: db, Secrets: secrets},
-		Pools:        pools,
-		Authz:        az,
-		Sessions:     sessions,
-		LoginLimiter: auth.NewLoginLimiter(),
-		Migration:    &migration.Handler{Service: migrations, Authz: az, View: renderer},
+	queueStore := &queue.Store{DB: db, Policy: queue.DefaultRetryPolicy()}
+	approvals := &approval.Store{
+		DB:    db,
+		Queue: queueStore,
+		Guard: approval.DefaultGuard(migrations),
+		Authz: az,
+	}
+	if err := approvals.SyncOpen(ctx); err != nil {
+		slog.Warn("sinkronisasi approval awal belum selesai", "err", err)
 	}
 
-	// Urutan dari luar: Recover, SecurityHeaders, RequestLog, Session, CSRF.
-	mws := []func(http.Handler) http.Handler{httpx.Recover, httpx.SecurityHeaders, httpx.RequestLog, sessions.Middleware}
+	// Worker memakai context sendiri, bukan ctx sinyal, supaya urutan
+	// shutdown terjaga: HTTP berhenti dulu, lalu worker menyelesaikan job
+	// yang sedang berjalan, baru koneksi database ditutup (defer pools.Close
+	// dan db.Close dijalankan setelah stopWorker).
+	stopWorker := func() {}
+	if cfg.WorkerEnabled {
+		w := newWorker(workerDeps{DB: db, Queue: queueStore, Migrations: migrations, Approvals: approvals},
+			worker.Config{Concurrency: cfg.WorkerConcurrency, JobTimeout: cfg.JobTimeout})
+		workerCtx, cancelWorker := context.WithCancel(context.Background())
+		workerDone := make(chan struct{})
+		go func() {
+			w.Run(workerCtx)
+			close(workerDone)
+		}()
+		stopWorker = func() {
+			cancelWorker()
+			slog.Info("menunggu job yang sedang berjalan selesai")
+			<-workerDone
+		}
+	} else {
+		slog.Warn("WORKER_ENABLED=false, proses ini tidak menjalankan job migration")
+	}
+	defer stopWorker()
+
+	app := &App{
+		DB:            db,
+		View:          renderer,
+		Admin:         &admin.Store{DB: db},
+		Connections:   &admin.Connections{DB: db, Secrets: secrets},
+		Pools:         pools,
+		Authz:         az,
+		Sessions:      sessions,
+		LoginLimiter:  auth.NewLoginLimiter(),
+		Migration:     &migration.Handler{Service: migrations, Authz: az, View: renderer},
+		Approvals:     approvals,
+		Jobs:          queueStore,
+		MetricsToken:  cfg.MetricsToken,
+		MetricsStrict: cfg.IsProduction() && cfg.MetricsToken == "",
+	}
+
+	mws := []func(http.Handler) http.Handler{
+		httpx.Recover,
+		httpx.SecurityHeaders,
+		httpx.RequestLog,
+		sessions.Middleware,
+	}
 	if cfg.DevAuthUserID != 0 {
 		slog.Warn("DEV_AUTH_USER_ID aktif, semua request login sebagai user ini", "user_id", cfg.DevAuthUserID)
 		mws = append(mws, auth.DevAuthMiddleware(db, cfg.DevAuthUserID))
@@ -111,7 +163,7 @@ func run() error {
 		Handler:           httpx.Chain(app.routes(), mws...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second, // eksekusi migration bisa lama
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -126,11 +178,11 @@ func run() error {
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
+		return nil
 	case <-ctx.Done():
 		slog.Info("shutdown")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
-	return nil
 }

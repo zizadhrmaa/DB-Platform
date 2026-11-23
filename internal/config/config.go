@@ -1,26 +1,30 @@
-// Package config membaca konfigurasi dari environment variable.
 package config
 
 import (
 	"errors"
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
-	Env           string // development atau production
+	Env           string
 	Addr          string
 	DatabaseURL   string
-	SecretKeyB64  string // key AES untuk password DB target
+	SecretKeyB64  string
 	AdminUsername string
 	AdminPassword string
-	DevAuthUserID int64 // 0 berarti nonaktif
+	DevAuthUserID int64
+	MetricsToken  string
+
+	// Worker antrean migration.
+	WorkerEnabled     bool          // WORKER_ENABLED, default true
+	WorkerConcurrency int           // WORKER_CONCURRENCY, default 2
+	JobTimeout        time.Duration // JOB_TIMEOUT, default 30m
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
 
-// Browser tidak mengirim cookie Secure lewat http://localhost, jadi hanya
-// dinyalakan di production.
 func (c Config) CookieSecure() bool { return c.IsProduction() }
 
 func Load() (Config, error) {
@@ -31,6 +35,7 @@ func Load() (Config, error) {
 		SecretKeyB64:  os.Getenv("APP_SECRET_KEY"),
 		AdminUsername: getenv("ADMIN_USERNAME", "admin"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+		MetricsToken:  os.Getenv("METRICS_TOKEN"),
 	}
 	if v := os.Getenv("DEV_AUTH_USER_ID"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -41,6 +46,7 @@ func Load() (Config, error) {
 	}
 
 	var errs []error
+	errs = append(errs, c.loadWorker()...)
 	if c.Env != "development" && c.Env != "production" {
 		errs = append(errs, errors.New("APP_ENV harus development atau production"))
 	}
@@ -57,6 +63,35 @@ func Load() (Config, error) {
 		errs = append(errs, errors.New("ADMIN_PASSWORD minimal 12 karakter di production"))
 	}
 	return c, errors.Join(errs...)
+}
+
+func (c *Config) loadWorker() []error {
+	var errs []error
+	c.WorkerEnabled = true
+	if v := os.Getenv("WORKER_ENABLED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, errors.New("WORKER_ENABLED harus true atau false"))
+		}
+		c.WorkerEnabled = b
+	}
+	c.WorkerConcurrency = 2
+	if v := os.Getenv("WORKER_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			errs = append(errs, errors.New("WORKER_CONCURRENCY harus bilangan bulat minimal 1"))
+		}
+		c.WorkerConcurrency = n
+	}
+	c.JobTimeout = 30 * time.Minute
+	if v := os.Getenv("JOB_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			errs = append(errs, errors.New("JOB_TIMEOUT harus durasi positif, misalnya 30m atau 2h"))
+		}
+		c.JobTimeout = d
+	}
+	return errs
 }
 
 func getenv(k, def string) string {

@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "dbplatform"
+    metrics_path: "/metrics"
+    authorization:
+      type: Bearer
+      credentials: isi-sama-dengan-METRICS_TOKEN
+    static_configs:
+      - targets: ["host.docker.internal:8080", "app:8080"]
+        labels:
+          app: "dbplatform"

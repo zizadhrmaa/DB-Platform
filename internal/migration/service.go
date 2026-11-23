@@ -6,21 +6,28 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
+	"github.com/zizadhrmaa/DB-Platform/internal/obs"
 )
 
 type Store struct {
 	DB      *sql.DB
 	Targets dbmanager.Manager
 	Authz   authz.Authorizer
+
+	// commit menggantikan tx.Commit di test untuk meniru COMMIT tanpa jawaban.
+	commit func(*sql.Tx) error
 }
 
 var _ Service = (*Store)(nil)
@@ -146,7 +153,17 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 	if e := ValidateSQL(sqlText); e != nil {
 		return e
 	}
-	r, e := s.DB.ExecContext(ctx, `UPDATE migrations SET title=$1,sql_text=$2,updated_by=$3,updated_at=now() WHERE id=$4 AND db_id=$5 AND status IN('pending','failed')`, title, sqlText, u.ID, id, dbID)
+	r, e := s.DB.ExecContext(ctx, `
+		UPDATE migrations SET title=$1, sql_text=$2, updated_by=$3, updated_at=now(), revision=revision+1
+		WHERE id=$4 AND db_id=$5 AND status IN ('pending','failed')
+		  AND NOT EXISTS (
+			SELECT 1 FROM change_requests c
+			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs j
+			WHERE j.migration_id = migrations.id
+			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`,
+		title, sqlText, u.ID, id, dbID)
 	if e != nil {
 		return e
 	}
@@ -156,7 +173,10 @@ func (s *Store) Update(ctx context.Context, u *domain.User, dbID, id int64, titl
 		if e != nil {
 			return e
 		}
-		return fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status)
+		if !m.Status.Editable() {
+			return fmt.Errorf("%w: migration berstatus %s tidak bisa diubah", domain.ErrConflict, m.Status)
+		}
+		return fmt.Errorf("%w: migration sedang dalam request perubahan atau antrean, jadi tidak bisa diubah", domain.ErrConflict)
 	}
 	return nil
 }
@@ -167,7 +187,16 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 	if dbID <= 0 || id <= 0 {
 		return domain.ErrInvalidInput
 	}
-	r, e := s.DB.ExecContext(ctx, `UPDATE migrations SET status='discarded',updated_by=$1,updated_at=now() WHERE id=$2 AND db_id=$3 AND status IN('pending','failed')`, u.ID, id, dbID)
+	r, e := s.DB.ExecContext(ctx, `
+		UPDATE migrations SET status='discarded', updated_by=$1, updated_at=now()
+		WHERE id=$2 AND db_id=$3 AND status IN ('pending','failed')
+		  AND NOT EXISTS (
+			SELECT 1 FROM change_requests c
+			WHERE c.migration_id = migrations.id AND c.status IN ('draft','pending_review','approved','queued'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs j
+			WHERE j.migration_id = migrations.id
+			  AND j.status IN ('queued','running','uncertain','partial','partially_reverted'))`, u.ID, id, dbID)
 	if e != nil {
 		return e
 	}
@@ -177,18 +206,70 @@ func (s *Store) Discard(ctx context.Context, u *domain.User, dbID, id int64) err
 		if e != nil {
 			return e
 		}
-		return fmt.Errorf("%w: migration berstatus %s tidak bisa dibatalkan", domain.ErrConflict, m.Status)
+		if !m.Status.Discardable() {
+			return fmt.Errorf("%w: migration berstatus %s tidak bisa dibatalkan", domain.ErrConflict, m.Status)
+		}
+		return fmt.Errorf("%w: migration sedang dalam request perubahan atau antrean, jadi tidak bisa dibatalkan", domain.ErrConflict)
 	}
 	return nil
 }
 
-// Execute menjalankan SQL migration di database target.
+// Error hasil eksekusi yang perlu dibedakan worker. Masing-masing
+// membungkus error domain supaya httpx.StatusFor tetap bisa memetakannya.
+var (
+	// ErrTargetBusy: lock eksekusi di database target sedang dipegang.
+	// Belum ada attempt yang tercatat, jadi aman dicoba lagi.
+	ErrTargetBusy = fmt.Errorf("%w: ada migration lain yang sedang dijalankan di database ini", domain.ErrConflict)
+	// ErrInterrupted: koneksi ke target putus sebelum COMMIT, atau setelah
+	// COMMIT tanpa jawaban tetapi bukti menunjukkan tidak committed. Attempt
+	// sudah dicatat failed dan perubahan pasti tidak masuk, jadi aman dicoba lagi.
+	ErrInterrupted = fmt.Errorf("%w: koneksi ke database target terputus sebelum perubahan di-commit", domain.ErrUnavailable)
+	// ErrUncertain: COMMIT tidak dijawab dan bukti di target belum bisa
+	// diperiksa. Migration dibiarkan running supaya versi berikutnya
+	// tertahan sampai pemulihan memastikan hasilnya.
+	ErrUncertain = fmt.Errorf("%w: hasil commit migration belum pasti dan sedang menunggu pemeriksaan", domain.ErrUnavailable)
+)
+
+// ExecOptions mengatur eksekusi yang dijalankan worker.
+type ExecOptions struct {
+	// Timeout seluruh eksekusi, juga dipakai sebagai statement_timeout.
+	// 0 berarti 90 detik dengan statement_timeout 60 detik (perilaku lama).
+	Timeout time.Duration
+	// OnStart dipanggil di dalam transaction platform yang mencatat
+	// migration_runs, sebelum transaction itu di-commit dan sebelum SQL
+	// dijalankan di target. Error dari OnStart membatalkan pencatatan dan
+	// SQL tidak dijalankan. Worker memakainya untuk menulis jobs.run_id
+	// secara atomik dengan attempt.
+	OnStart func(ctx context.Context, tx *sql.Tx, runID int64) error
+}
+
+// Execute menjalankan SQL migration di database target secara sinkron.
+// Perilakunya sama seperti sebelum ada worker: koneksi yang putus sebelum
+// COMMIT dicatat sebagai run failed tanpa error.
+func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error) {
+	run, err := s.ExecuteWith(ctx, u, dbID, id, ExecOptions{})
+	if errors.Is(err, ErrInterrupted) && run != nil {
+		return run, nil
+	}
+	return run, err
+}
+
+// ExecuteWith menjalankan SQL migration di database target.
 //
 // Urutannya: kunci advisory di target diambil dulu, baru status diubah ke
 // running di database platform. Jadi status running hanya ada selama kunci
 // itu dipegang, dan Recover bisa membedakan eksekusi yang masih berjalan
 // dengan eksekusi yang terputus.
-func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*Run, error) {
+//
+// Hasil:
+//   - run success atau failed tanpa error: SQL selesai (failed berarti SQL
+//     ditolak server, termasuk COMMIT yang ditolak, atau melewati batas
+//     waktu). Tidak perlu dicoba lagi.
+//   - ErrTargetBusy, ErrInterrupted, atau error domain.ErrUnavailable lain:
+//     kegagalan sementara, perubahan pasti tidak masuk.
+//   - ErrUncertain: COMMIT tidak dijawab dan bukti belum bisa diperiksa.
+//   - error domain lain (urutan, akses, tidak ditemukan): ditolak.
+func (s *Store) ExecuteWith(ctx context.Context, u *domain.User, dbID, id int64, opt ExecOptions) (*Run, error) {
 	if u == nil {
 		return nil, domain.ErrUnauthenticated
 	}
@@ -198,8 +279,14 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	if e := s.Authz.Authorize(ctx, u, dbID, authz.ActionExecuteMigration); e != nil {
 		return nil, e
 	}
-	// Context terpisah supaya pencatatan tetap selesai walaupun user menutup tab.
-	work, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	timeout, stmtTimeout := opt.Timeout, opt.Timeout
+	if timeout <= 0 {
+		timeout, stmtTimeout = 90*time.Second, 60*time.Second
+	}
+	// Context terpisah dari pembatalan pemanggil supaya pencatatan tetap
+	// selesai walaupun user menutup tab atau server mulai shutdown.
+	base := context.WithoutCancel(ctx)
+	work, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	target, e := s.Targets.Conn(work, dbID)
 	if e != nil {
@@ -215,19 +302,27 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 	isMy := dbmanager.IsMySQL(target)
 	if !isMy {
 		if _, e = tx.ExecContext(work, `SET LOCAL lock_timeout='5s'`); e != nil {
-			return nil, e
+			return nil, dbmanager.SanitizeError(e)
 		}
-		if _, e = tx.ExecContext(work, `SET LOCAL statement_timeout='60s'`); e != nil {
-			return nil, e
+		if _, e = tx.ExecContext(work, fmt.Sprintf(`SET LOCAL statement_timeout='%dms'`, stmtTimeout.Milliseconds())); e != nil {
+			return nil, dbmanager.SanitizeError(e)
 		}
 	}
-	locked, e := tryLockTarget(work, tx, dbID, isMy)
+	lockStart := time.Now()
+	lockCtx, lockSpan := obs.StartSpan(work, "migration.lock", trace.WithAttributes(attribute.Int64("db.id", dbID)))
+	locked, e := tryLockTarget(lockCtx, tx, dbID, isMy)
+	obs.RecordLockWait(time.Since(lockStart))
+	obs.RecordError(lockSpan, e)
+	lockSpan.End()
 	if e != nil {
+		slog.WarnContext(work, "lock database target gagal diambil", "event", "migration.lock", "status", "error", "db_id", dbID)
 		return nil, e
 	}
 	if !locked {
-		return nil, fmt.Errorf("%w: ada migration lain yang sedang dijalankan di database ini", domain.ErrConflict)
+		slog.WarnContext(work, "lock database target dipegang migration lain", "event", "migration.lock", "status", "busy", "db_id", dbID)
+		return nil, ErrTargetBusy
 	}
+	slog.InfoContext(work, "lock database target diambil", "event", "migration.lock", "status", "acquired", "db_id", dbID)
 	if isMy {
 		defer unlockTarget(work, tx, dbID, isMy)
 	}
@@ -235,52 +330,161 @@ func (s *Store) Execute(ctx context.Context, u *domain.User, dbID, id int64) (*R
 		return nil, e
 	}
 
-	sqlText, version, runID, e := s.start(work, u, dbID, id)
+	sqlText, version, runID, e := s.start(work, u, dbID, id, opt.OnStart)
 	if e != nil {
 		return nil, e
 	}
+	// Semua log setelah ini membawa execution ID attempt ini.
+	jc := obs.JobContext{ExecutionID: runID, MigrationID: id}
+	base, work = obs.WithJobContext(base, jc), obs.WithJobContext(work, jc)
+	slog.InfoContext(work, "attempt migration dimulai", "event", "migration.attempt_start",
+		"db_id", dbID, "version", version, "user", u.Username, "sql", sqlText)
 
-	resultErr := func() error {
+	// Pencatatan hasil memakai context sendiri: work bisa saja sudah habis
+	// karena timeout eksekusi.
+	book, cancelBook := context.WithTimeout(base, 15*time.Second)
+	defer cancelBook()
+
+	ltx := dbmanager.WrapTx(tx, dbID, "")
+
+	execErr := func() error {
 		historyTableSQL := `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INTEGER PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`
 		insertSQL := `INSERT INTO _dbplatform_history(version) VALUES($1)`
 		if isMy {
 			historyTableSQL = `CREATE TABLE IF NOT EXISTS _dbplatform_history(version INT PRIMARY KEY,applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`
 			insertSQL = `INSERT INTO _dbplatform_history(version) VALUES(?)`
 		}
-		if _, e := tx.ExecContext(work, historyTableSQL); e != nil {
+		if _, e := ltx.ExecContext(work, historyTableSQL); e != nil {
 			return e
 		}
-		if _, e := tx.ExecContext(work, insertSQL, version); e != nil {
+		if _, e := ltx.ExecContext(work, insertSQL, version); e != nil {
 			return e
 		}
-		if _, e := tx.ExecContext(work, sqlText); e != nil {
-			return e
-		}
-		return tx.Commit()
+		_, e := ltx.ExecContext(work, sqlText)
+		return e
 	}()
-	status := StatusSuccess
-	message := ""
-	if resultErr != nil {
-		status = StatusFailed
-		message = errorMessage(resultErr)
+	var commitErr error
+	if execErr == nil {
+		commitErr = s.commitTx(book, tx, ltx)
+	} else {
+		_ = ltx.RollbackContext(book)
 	}
-	if e = s.finish(work, id, dbID, runID, status, message); e != nil {
-		return nil, e
+
+	switch {
+	case execErr == nil && commitErr == nil:
+		return s.finishRun(book, id, dbID, runID, StatusSuccess, "", nil)
+	case execErr != nil:
+		if serverRejected(execErr) || errors.Is(execErr, context.DeadlineExceeded) {
+			return s.finishRun(book, id, dbID, runID, StatusFailed, errorMessage(execErr), nil)
+		}
+		// Koneksi putus sebelum COMMIT: transaction pasti batal.
+		return s.finishRun(book, id, dbID, runID, StatusFailed, interruptedMessage, ErrInterrupted)
+	case serverRejected(commitErr):
+		// Server menjawab COMMIT dengan error (misalnya constraint deferred):
+		// transaction batal, ini kegagalan biasa.
+		return s.finishRun(book, id, dbID, runID, StatusFailed, errorMessage(commitErr), nil)
 	}
-	runs, e := s.Runs(work, dbID, id)
+
+	// COMMIT tanpa jawaban. Periksa bukti di target sebelum memutuskan.
+	if !s.verifyAfterCommit(book, dbID, isMy) {
+		slog.WarnContext(book, "hasil attempt migration belum pasti", "event", "migration.attempt_result",
+			"status", "uncertain", "db_id", dbID, "error", "COMMIT tidak dijawab dan bukti belum bisa diperiksa")
+		run, _ := s.runByID(book, id, runID)
+		return run, ErrUncertain
+	}
+	run, e := s.runByID(book, id, runID)
 	if e != nil {
 		return nil, e
 	}
-	if len(runs) == 0 {
+	if run.Status == StatusSuccess {
+		return run, nil
+	}
+	return run, ErrInterrupted
+}
+
+// commitTx bisa diganti test untuk meniru COMMIT yang tidak dijawab.
+func (s *Store) commitTx(ctx context.Context, tx *sql.Tx, ltx *dbmanager.LoggedTx) error {
+	if s.commit != nil {
+		return s.commit(tx)
+	}
+	return ltx.CommitContext(ctx)
+}
+
+// serverRejected berarti server database menjawab dengan error SQL biasa.
+// Error kelas 08 (koneksi) dan 57P (server dimatikan atau koneksi diputus
+// administrator) dianggap koneksi putus, bukan kesalahan SQL user.
+func serverRejected(e error) bool {
+	var me *mysql.MySQLError
+	if errors.As(e, &me) {
+		return true
+	}
+	var pe *pgconn.PgError
+	if !errors.As(e, &pe) {
+		return false
+	}
+	return !strings.HasPrefix(pe.Code, "08") && !strings.HasPrefix(pe.Code, "57P")
+}
+
+// verifyAfterCommit mengambil lock target lewat koneksi baru lalu
+// membereskan migration running dengan bukti _dbplatform_history. Hasil
+// false berarti bukti belum bisa diperiksa: lock masih dipegang (transaction
+// lama mungkin masih berjalan di server) atau target tidak terjangkau.
+func (s *Store) verifyAfterCommit(ctx context.Context, dbID int64, isMy bool) bool {
+	target, e := s.Targets.Conn(ctx, dbID)
+	if e != nil {
+		return false
+	}
+	tx, e := target.BeginTx(ctx, nil)
+	if e != nil {
+		return false
+	}
+	defer tx.Rollback()
+	locked, e := tryLockTarget(ctx, tx, dbID, isMy)
+	if e != nil || !locked {
+		return false
+	}
+	if isMy {
+		defer unlockTarget(ctx, tx, dbID, isMy)
+	}
+	return s.reconcile(ctx, tx, dbID, isMy) == nil
+}
+
+func (s *Store) finishRun(ctx context.Context, id, dbID, runID int64, status Status, message string, result error) (*Run, error) {
+	if e := s.finish(ctx, id, dbID, runID, status, message); e != nil {
+		return nil, e
+	}
+	level := slog.LevelInfo
+	if status != StatusSuccess {
+		level = slog.LevelWarn
+	}
+	slog.Log(ctx, level, "hasil attempt migration", "event", "migration.attempt_result",
+		"status", status, "db_id", dbID, "error", message)
+	run, e := s.runByID(ctx, id, runID)
+	if e != nil {
+		return nil, e
+	}
+	return run, result
+}
+
+func (s *Store) runByID(ctx context.Context, migrationID, runID int64) (*Run, error) {
+	var r Run
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT r.id,r.migration_id,r.sql_text,COALESCE(u.username,''),r.started_at,r.finished_at,r.status,COALESCE(r.error_message,'')
+		FROM migration_runs r LEFT JOIN users u ON u.id=r.executed_by
+		WHERE r.id=$1 AND r.migration_id=$2`, runID, migrationID).
+		Scan(&r.ID, &r.MigrationID, &r.SQL, &r.ExecutedBy, &r.StartedAt, &r.FinishedAt, &r.Status, &r.ErrorMessage)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
-	// Kegagalan SQL dicatat sebagai run failed; handler menampilkannya di halaman review.
-	return &runs[0], nil
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // start mengunci migration database ini, memastikan id adalah giliran
 // berikutnya, lalu menandainya running.
-func (s *Store) start(work context.Context, u *domain.User, dbID, id int64) (string, int, int64, error) {
+func (s *Store) start(work context.Context, u *domain.User, dbID, id int64, onStart func(context.Context, *sql.Tx, int64) error) (string, int, int64, error) {
 	platformTx, e := s.DB.BeginTx(work, nil)
 	if e != nil {
 		return "", 0, 0, e
@@ -329,6 +533,11 @@ func (s *Store) start(work context.Context, u *domain.User, dbID, id int64) (str
 	e = platformTx.QueryRowContext(work, `INSERT INTO migration_runs(migration_id,sql_text,executed_by,status) VALUES($1,$2,$3,'running') RETURNING id`, id, sqlText, u.ID).Scan(&runID)
 	if e != nil {
 		return "", 0, 0, e
+	}
+	if onStart != nil {
+		if e = onStart(work, platformTx, runID); e != nil {
+			return "", 0, 0, e
+		}
 	}
 	return sqlText, version, runID, platformTx.Commit()
 }

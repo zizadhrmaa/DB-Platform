@@ -37,6 +37,88 @@ func unlockTarget(ctx context.Context, tx *sql.Tx, dbID int64, isMySQL bool) {
 	}
 }
 
+// Verdict adalah hasil pemeriksaan bukti satu attempt.
+type Verdict int
+
+const (
+	// VerdictUnknown: bukti belum bisa diperiksa, misalnya lock target masih
+	// dipegang transaction lama atau target tidak terjangkau.
+	VerdictUnknown Verdict = iota
+	// VerdictCommitted: perubahan attempt ini sudah committed di target.
+	VerdictCommitted
+	// VerdictFailed: SQL ditolak server; mengulang tidak akan membantu.
+	VerdictFailed
+	// VerdictInterrupted: attempt terputus dan perubahannya tidak masuk.
+	VerdictInterrupted
+)
+
+func (v Verdict) String() string {
+	switch v {
+	case VerdictCommitted:
+		return "committed"
+	case VerdictFailed:
+		return "failed"
+	case VerdictInterrupted:
+		return "interrupted"
+	default:
+		return "unknown"
+	}
+}
+
+// VerifyRun memastikan hasil attempt runID dari bukti di database target.
+//
+// Lock eksekusi target diambil dulu (tanpa menunggu). Selama lock itu
+// dipegang, transaction attempt lama mungkin masih berjalan dan bisa saja
+// commit, jadi hasilnya VerdictUnknown dan tidak ada yang diubah. Kalau lock
+// didapat, transaction lama pasti sudah selesai (commit atau rollback,
+// termasuk rollback otomatis saat koneksinya putus), sehingga isi
+// _dbplatform_history menjadi bukti yang final. Migration yang masih running
+// dibereskan sesuai bukti itu, lalu status attempt dibaca.
+//
+// message berisi pesan error attempt untuk VerdictFailed.
+func (s *Store) VerifyRun(ctx context.Context, dbID, migrationID, runID int64) (v Verdict, message string, err error) {
+	if s.DB == nil || s.Targets == nil {
+		return VerdictUnknown, "", fmt.Errorf("verify dependencies not initialized")
+	}
+	target, e := s.Targets.Conn(ctx, dbID)
+	if e != nil {
+		return VerdictUnknown, "", e
+	}
+	isMy := dbmanager.IsMySQL(target)
+	tx, e := target.BeginTx(ctx, nil)
+	if e != nil {
+		return VerdictUnknown, "", dbmanager.SanitizeError(e)
+	}
+	defer tx.Rollback()
+	locked, e := tryLockTarget(ctx, tx, dbID, isMy)
+	if e != nil {
+		return VerdictUnknown, "", e
+	}
+	if !locked {
+		return VerdictUnknown, "", nil
+	}
+	if isMy {
+		defer unlockTarget(ctx, tx, dbID, isMy)
+	}
+	if e := s.reconcile(ctx, tx, dbID, isMy); e != nil {
+		return VerdictUnknown, "", e
+	}
+	run, e := s.runByID(ctx, migrationID, runID)
+	if e != nil {
+		return VerdictUnknown, "", e
+	}
+	switch run.Status {
+	case StatusSuccess:
+		return VerdictCommitted, "", nil
+	case StatusFailed:
+		if run.ErrorMessage == interruptedMessage {
+			return VerdictInterrupted, run.ErrorMessage, nil
+		}
+		return VerdictFailed, run.ErrorMessage, nil
+	}
+	return VerdictUnknown, "", nil
+}
+
 func (s *Store) Recover(ctx context.Context) error {
 	if s.DB == nil || s.Targets == nil {
 		return fmt.Errorf("recovery dependencies not initialized")
