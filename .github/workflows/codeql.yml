@@ -40,3 +40,40 @@ jobs:
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:${{ matrix.language }}
+          output: sarif-results
+      # Ringkasan temuan sebagai bukti scan: tabel di job summary dan
+      # anotasi per temuan (rule, severity, lokasi). File SARIF disimpan
+      # sebagai artifact.
+      - name: Ringkasan temuan CodeQL
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, json, os
+          rows = []
+          for path in glob.glob("sarif-results/*.sarif"):
+              run = json.load(open(path))["runs"][0]
+              rules = {r["id"]: r for r in run["tool"]["driver"].get("rules", [])}
+              files = run.get("artifacts", [])
+              for res in run.get("results", []):
+                  rule = rules.get(res["ruleId"], {})
+                  props = rule.get("properties", {})
+                  sev = props.get("security-severity") or props.get("problem.severity") or res.get("level", "")
+                  loc = res["locations"][0]["physicalLocation"]
+                  uri = loc["artifactLocation"].get("uri") or files[loc["artifactLocation"]["index"]]["location"]["uri"]
+                  line = loc.get("region", {}).get("startLine", 1)
+                  msg = res["message"]["text"].replace("\n", " ")
+                  rows.append((res["ruleId"], str(sev), uri, line, msg))
+                  print(f"::warning file={uri},line={line},title=CodeQL {res['ruleId']} (severity {sev})::{msg[:500]}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write(f"### CodeQL ${{ matrix.language }}: {len(rows)} temuan\n\n")
+              if rows:
+                  out.write("| Rule | Severity | Lokasi | Pesan |\n|---|---|---|---|\n")
+                  for r in rows:
+                      out.write(f"| {r[0]} | {r[1]} | {r[2]}:{r[3]} | {r[4][:200]} |\n")
+          print(f"{len(rows)} temuan")
+          EOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: sarif-results
