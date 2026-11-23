@@ -5,6 +5,7 @@ import type { ChangeDetail, ExecutionKind, MigrationDetail, MigrationDraft } fro
 import { ErrorBanner, Loading } from '../../components/ui';
 import { fmtTime, useAction, useLoad } from '../../hooks';
 import { DraftForm, sqlBox, statusLabel, useCanEdit } from './shared';
+import { ExplainPanel } from './tools';
 
 export const MigrationDetailPage = () => {
   const { dbID, migrationID } = useParams();
@@ -139,6 +140,8 @@ export const MigrationDetailPage = () => {
           )}
         </div>
       )}
+
+      {canEdit && m.exec_mode === 'normal' && editable && <ExplainPanel base={base} />}
 
       <div className="card">
         <h2 className="h2">Eksekusi</h2>

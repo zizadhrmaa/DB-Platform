@@ -67,6 +67,12 @@ func (app *App) registerAPIRoutes(mux *http.ServeMux) {
 		dbWrite(authz.ActionEditMigration, "migration.update", app.apiUpdateMigration))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/discard",
 		dbWrite(authz.ActionEditMigration, "migration.discard", app.apiDiscardMigration))
+	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/explain",
+		dbWrite(authz.ActionExecuteMigration, "migration.explain", app.apiExplainMigration))
+	mux.Handle("GET /api/databases/{dbID}/schema-diff",
+		dbRead(authz.ActionCreateMigration, app.apiCurrentSchema))
+	mux.Handle("POST /api/databases/{dbID}/schema-diff",
+		dbWrite(authz.ActionCreateMigration, "migration.schema_diff", app.apiSchemaDiff))
 	mux.Handle("POST /api/databases/{dbID}/migrations/{migrationID}/requests",
 		dbWrite(authz.ActionRequestChange, "change.create", app.apiCreateChange))
 	mux.Handle("GET /api/databases/{dbID}/requests",
