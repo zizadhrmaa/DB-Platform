@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/domain"
@@ -810,7 +812,16 @@ func (s *Store) Enqueue(ctx context.Context, u *domain.User, dbID, id int64) (*q
 	if execMode == string(queue.ModeBatch) && r.kind == queue.KindUp {
 		mode = queue.ModeBatch
 	}
-	job, _, err := s.Queue.Enqueue(ctx, queue.EnqueueParams{
+	// Span queue.enqueue: traceparent diambil dari span ini, jadi span
+	// job.process di worker menjadi anaknya (API -> queue -> worker).
+	qctx, span := obs.StartSpan(ctx, "queue.enqueue", trace.WithAttributes(
+		attribute.Int64("db.id", dbID),
+		attribute.Int64("migration.id", r.migrationID),
+		attribute.Int64("change_request.id", id),
+		attribute.String("job.kind", string(r.kind)),
+		attribute.String("job.mode", string(mode)),
+	))
+	job, _, err := s.Queue.Enqueue(qctx, queue.EnqueueParams{
 		DBID:           dbID,
 		MigrationID:    r.migrationID,
 		Kind:           r.kind,
@@ -818,8 +829,13 @@ func (s *Store) Enqueue(ctx context.Context, u *domain.User, dbID, id int64) (*q
 		IdempotencyKey: fmt.Sprintf("request-%d-%d", id, attempts),
 		RequestedBy:    u.ID,
 		RequestID:      &id,
-		TraceContext:   obs.InjectTraceParent(ctx),
+		TraceContext:   obs.InjectTraceParent(qctx),
 	})
+	if job != nil {
+		span.SetAttributes(attribute.Int64("job.id", job.ID))
+	}
+	obs.RecordError(span, err)
+	span.End()
 	if err != nil {
 		// queue menolak job dengan jenis berbeda (misalnya rollback saat job
 		// up masih terbuka) supaya ID job lain tidak dikembalikan sebagai

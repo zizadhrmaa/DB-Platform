@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/zizadhrmaa/DB-Platform/internal/authz"
 	"github.com/zizadhrmaa/DB-Platform/internal/dbmanager"
@@ -148,7 +150,15 @@ func (s *Store) ExecuteBatch(ctx context.Context, u *domain.User, dbID, id int64
 	}()
 
 	var locked bool
-	if e := conn.QueryRowContext(base, `SELECT pg_try_advisory_lock($1::integer, $2::integer)`, 3110, dbID).Scan(&locked); e != nil {
+	lockStart := time.Now()
+	lockCtx, lockSpan := obs.StartSpan(base, "migration.lock", trace.WithAttributes(
+		attribute.Int64("db.id", dbID), attribute.String("lock.scope", "session"), attribute.String("migration.mode", "batch")))
+	e = conn.QueryRowContext(lockCtx, `SELECT pg_try_advisory_lock($1::integer, $2::integer)`, 3110, dbID).Scan(&locked)
+	obs.RecordLockWait(time.Since(lockStart))
+	lockSpan.SetAttributes(attribute.Bool("lock.acquired", locked))
+	obs.RecordError(lockSpan, e)
+	lockSpan.End()
+	if e != nil {
 		return nil, dbmanager.SanitizeError(e)
 	}
 	if !locked {
@@ -276,7 +286,7 @@ func (b *batchRun) run(ctx context.Context, u *domain.User) (*BatchResult, error
 				break
 			}
 			no := res.Progress.Batches + 1
-			n, err := b.apply(obs.WithJobContext(ctx, obs.JobContext{Batch: no}), b.m.SQL, res.Progress.Cursor, hi.Int64, func(ctx context.Context, tx execer, rows int64) error {
+			n, err := b.apply(obs.WithJobContext(ctx, obs.JobContext{Batch: no}), no, b.m.SQL, res.Progress.Cursor, hi.Int64, func(ctx context.Context, tx execer, rows int64) error {
 				_, err := tx.ExecContext(ctx, `INSERT INTO _dbplatform_batches (job_id, batch_no, lower_bound, upper_bound, rows) VALUES ($1,$2,$3,$4,$5)`,
 					b.opt.JobID, no, res.Progress.Cursor, hi.Int64, rows)
 				return err
@@ -324,7 +334,22 @@ type execer interface {
 
 // apply menjalankan satu batch di transaction sendiri: SQL user untuk
 // rentang (lower, upper], lalu checkpoint, lalu COMMIT.
-func (b *batchRun) apply(ctx context.Context, sqlText string, lower, upper int64, checkpoint func(context.Context, execer, int64) error) (int64, error) {
+// Setiap batch punya span migration.batch (anak job.process) berisi nomor
+// batch, rentang, jumlah row, dan error.
+func (b *batchRun) apply(ctx context.Context, no int, sqlText string, lower, upper int64, checkpoint func(context.Context, execer, int64) error) (n int64, err error) {
+	ctx, span := obs.StartSpan(ctx, "migration.batch", trace.WithAttributes(
+		attribute.Int64("db.id", b.dbID),
+		attribute.Int64("job.id", b.opt.JobID),
+		attribute.String("batch.action", string(b.opt.Action)),
+		attribute.Int("batch.no", no),
+		attribute.Int64("batch.lower", lower),
+		attribute.Int64("batch.upper", upper),
+	))
+	defer func() {
+		span.SetAttributes(attribute.Int64("batch.rows", n))
+		obs.RecordError(span, err)
+		span.End()
+	}()
 	tx, err := b.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -339,7 +364,7 @@ func (b *batchRun) apply(ctx context.Context, sqlText string, lower, upper int64
 		_ = ltx.RollbackContext(ctx)
 		return 0, err
 	}
-	n, _ := r.RowsAffected()
+	n, _ = r.RowsAffected()
 	if err = checkpoint(ctx, ltx, n); err != nil {
 		_ = ltx.RollbackContext(ctx)
 		return 0, err
@@ -484,7 +509,7 @@ func (b *batchRun) revertBatches(ctx context.Context) (*BatchResult, error) {
 		return res, nil
 	}
 	for _, sp := range todo {
-		_, err := b.apply(obs.WithJobContext(ctx, obs.JobContext{Batch: sp.no}), b.m.SQLDown, sp.lower, sp.upper, func(ctx context.Context, tx execer, _ int64) error {
+		_, err := b.apply(obs.WithJobContext(ctx, obs.JobContext{Batch: sp.no}), sp.no, b.m.SQLDown, sp.lower, sp.upper, func(ctx context.Context, tx execer, _ int64) error {
 			_, err := tx.ExecContext(ctx, `UPDATE _dbplatform_batches SET reverted_at = now() WHERE job_id = $1 AND batch_no = $2`, b.opt.JobID, sp.no)
 			return err
 		})
