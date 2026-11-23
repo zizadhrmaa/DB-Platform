@@ -290,10 +290,15 @@ func (s *Store) Recoverable(ctx context.Context, limit int) ([]Job, error) {
 // Attempt wajib diisi: status dan pemilik bisa sama persis di attempt
 // berikutnya (satu proses worker memakai owner yang sama untuk semua
 // claim), jadi hanya nomor attempt yang membedakan bukti lama dari baru.
+//
+// RunID adalah run_id yang dilihat pemulihan; 0 berarti belum ada attempt
+// yang tercatat. Ini mencegah pemulihan menjadwalkan ulang job yang baru
+// saja mencatat attempt oleh worker yang lease-nya lewat tetapi masih hidup.
 type Expect struct {
 	Status     Status
 	LeaseOwner string
 	Attempt    int
+	RunID      int64
 }
 
 // Resolve mengubah status job hasil pemulihan dengan compare-and-set: hanya
@@ -321,9 +326,9 @@ func (s *Store) Resolve(ctx context.Context, id int64, from Expect, to Status, m
 	err = tx.QueryRowContext(ctx, `
 		SELECT attempt, max_attempts FROM jobs
 		WHERE id = $1 AND status = $2 AND lease_owner IS NOT DISTINCT FROM NULLIF($3,'')
-		  AND attempt = $4
+		  AND attempt = $4 AND run_id IS NOT DISTINCT FROM NULLIF($5::bigint, 0)
 		  AND (status <> 'running' OR lease_until < now())
-		FOR UPDATE`, id, from.Status, from.LeaseOwner, from.Attempt).Scan(&attempt, &maxAttempts)
+		FOR UPDATE`, id, from.Status, from.LeaseOwner, from.Attempt, from.RunID).Scan(&attempt, &maxAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

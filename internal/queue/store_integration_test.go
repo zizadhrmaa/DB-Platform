@@ -367,7 +367,7 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 	if rec, _ := f.store.Recoverable(ctx, 10); len(rec) != 0 {
 		t.Fatalf("job dengan lease aktif tidak boleh masuk daftar pemulihan: %+v", rec)
 	}
-	ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusQueued, "worker mati")
+	ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1, RunID: runID}, queue.StatusQueued, "worker mati")
 	if err != nil || ok {
 		t.Fatalf("resolve sebelum lease lewat: ok=%v err=%v", ok, err)
 	}
@@ -382,13 +382,17 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 		t.Fatalf("job dengan lease lewat harus masuk daftar pemulihan: %+v err=%v", rec, err)
 	}
 	// Ekspektasi pemilik yang salah tidak boleh menang.
-	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w9", Attempt: 1}, queue.StatusQueued, ""); ok {
+	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w9", Attempt: 1, RunID: runID}, queue.StatusQueued, ""); ok {
 		t.Fatal("resolve dengan pemilik yang salah tidak boleh berhasil")
 	}
 	if _, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1"}, queue.StatusQueued, ""); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("resolve tanpa attempt harus ErrInvalidInput, dapat %v", err)
 	}
-	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusUncertain, "hasil belum pasti")
+	// Ekspektasi "belum ada attempt tercatat" tidak boleh menang setelah run_id tercatat.
+	if ok, _ := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusQueued, ""); ok {
+		t.Fatal("resolve dengan run_id yang berbeda tidak boleh berhasil")
+	}
+	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1, RunID: runID}, queue.StatusUncertain, "hasil belum pasti")
 	if err != nil || !ok {
 		t.Fatalf("resolve setelah lease lewat: ok=%v err=%v", ok, err)
 	}
@@ -403,7 +407,7 @@ func TestLeaseOwnershipAndRecovery(t *testing.T) {
 	if rec, _ := f.store.Recoverable(ctx, 10); len(rec) != 1 {
 		t.Fatalf("job uncertain harus masuk daftar pemulihan: %+v", rec)
 	}
-	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusUncertain, Attempt: 1}, queue.StatusSucceeded, "")
+	ok, err = f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusUncertain, Attempt: 1, RunID: runID}, queue.StatusSucceeded, "")
 	if err != nil || !ok {
 		t.Fatalf("resolve uncertain: ok=%v err=%v", ok, err)
 	}

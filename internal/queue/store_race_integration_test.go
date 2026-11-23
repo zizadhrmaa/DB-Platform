@@ -61,6 +61,77 @@ func TestResolveRejectsStaleAttempt(t *testing.T) {
 	}
 }
 
+// Worker yang lease-nya sudah lewat tetapi prosesnya masih hidup bisa
+// sedang mencatat run_id tepat saat pemulihan memutuskan "belum ada
+// attempt". Pemulihan harus kalah: SQL attempt itu akan tetap dijalankan
+// worker lama, jadi job tidak boleh dijadwalkan ulang.
+func TestResolveLosesToInFlightSetRun(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	dbID := testutil.MustDBConn(t, f.db, "toko")
+	migID := mustMigration(t, f.db, dbID)
+	j := f.enqueue(t, dbID, migID, "zombie")
+	f.claim(t, "w1")
+	f.exec(t, `UPDATE jobs SET lease_until = now() - interval '1 second' WHERE id = $1`, j.ID)
+
+	// Worker lama sedang di tengah transaction start(): migration_runs dan
+	// run_id sudah ditulis tetapi belum commit.
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var runID int64
+	if err := tx.QueryRow(`INSERT INTO migration_runs (migration_id, sql_text, status) VALUES ($1,'SELECT 1','running') RETURNING id`, migID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetRun(ctx, tx, j.ID, "w1", runID); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, err := f.store.Resolve(ctx, j.ID, queue.Expect{Status: queue.StatusRunning, LeaseOwner: "w1", Attempt: 1}, queue.StatusQueued, "worker mati")
+		done <- result{ok, err}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := f.db.QueryRow(`
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%' AND query LIKE '%attempt = $4%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case r := <-done:
+			t.Fatalf("resolve selesai sebelum tertahan, skenario tidak teruji: %+v", r)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resolve tidak pernah tertahan row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.ok {
+		t.Fatalf("pemulihan harus kalah dari attempt yang baru tercatat: ok=%v err=%v", r.ok, r.err)
+	}
+	got, _ := f.store.Get(ctx, j.ID)
+	if got.Status != queue.StatusRunning || got.RunID == nil || *got.RunID != runID {
+		t.Fatalf("job harus tetap running dengan run_id baru: %+v", got)
+	}
+}
+
 // Selama job tertua sebuah database menunggu jeda retry, job berikutnya di
 // database yang sama tidak boleh menyalip. Database lain tetap jalan.
 func TestClaimKeepsOrderWithinDatabase(t *testing.T) {
