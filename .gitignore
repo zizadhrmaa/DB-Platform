@@ -10,3 +10,5 @@ coverage.*
 web/dist/*
 !web/dist/.gitkeep
 frontend/node_modules/
+k6/hasil/server.log
+k6/hasil/server.exe
